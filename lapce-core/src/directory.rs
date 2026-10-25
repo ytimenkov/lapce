@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use directories::{BaseDirs, ProjectDirs};
 
-use crate::meta::NAME;
-
 pub struct Directory {}
 
 impl Directory {
@@ -13,7 +11,7 @@ impl Directory {
 
     #[cfg(not(feature = "portable"))]
     fn project_dirs() -> Option<ProjectDirs> {
-        ProjectDirs::from("dev", "lapce", NAME)
+        ProjectDirs::from("dev", "lapce", crate::meta::NAME)
     }
 
     /// Return path adjacent to lapce executable when built as portable
