@@ -5,7 +5,7 @@ use floem::{
     reactive::{Memo, SignalGet, SignalWith},
     text::{Attrs, AttrsList, FamilyOwned, TextLayout},
 };
-use im::HashMap;
+use imbl::HashMap;
 use lapce_core::{buffer::rope_text::RopeText, mode::Mode};
 use serde::{Deserialize, Serialize};
 
@@ -113,16 +113,6 @@ impl View for EditorGutterView {
         self.id
     }
 
-    fn compute_layout(
-        &mut self,
-        _cx: &mut floem::context::ComputeLayoutCx,
-    ) -> Option<floem::peniko::kurbo::Rect> {
-        if let Some(width) = self.id.get_layout().map(|l| l.size.width as f64) {
-            self.width = width;
-        }
-        None
-    }
-
     fn paint(&mut self, cx: &mut floem::context::PaintCx) {
         let viewport = self.editor.viewport().get_untracked();
         let cursor = self.editor.cursor();
@@ -189,8 +179,8 @@ impl View for EditorGutterView {
                 let size = text_layout.size();
                 let height = size.height;
 
-                cx.draw_text(
-                    &text_layout,
+                text_layout.draw(
+                    cx,
                     Point::new(
                         (self.width
                             - size.width

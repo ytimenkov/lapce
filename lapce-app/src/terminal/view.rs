@@ -15,10 +15,12 @@ use floem::{
         Color,
         kurbo::{Point, Rect, Size},
     },
-    pointer::PointerInputEvent,
     prelude::SignalTrack,
     reactive::{ReadSignal, RwSignal, SignalGet, SignalWith, create_effect},
-    text::{Attrs, AttrsList, FamilyOwned, TextLayout, Weight},
+    text::{Attrs, AttrsList, FamilyOwned, FontWeight, TextLayout},
+    ui_events::pointer::{
+        PointerButton, PointerButtonEvent, PointerEvent, PointerState,
+    },
     views::editor::{core::register::Clipboard, text::SystemClipboard},
 };
 use lapce_core::mode::Mode;
@@ -213,32 +215,34 @@ impl TerminalView {
         None
     }
 
-    fn update_mouse_action_by_down(&mut self, mouse: &PointerInputEvent) {
+    fn update_mouse_action_by_down(&mut self, mouse: &PointerButtonEvent) {
         let mut next_action = MouseAction::None;
+        let mouse_pos = mouse.state.logical_point();
+
         match self.current_mouse_action {
             MouseAction::None
             | MouseAction::LeftDouble { .. }
             | MouseAction::LeftSelect { .. }
             | MouseAction::RightOnce { .. } => {
-                if mouse.button.is_primary() {
-                    next_action = MouseAction::LeftDown { pos: mouse.pos };
-                } else if mouse.button.is_secondary() {
-                    next_action = MouseAction::RightDown { pos: mouse.pos };
+                if mouse.button == Some(PointerButton::Primary) {
+                    next_action = MouseAction::LeftDown { pos: mouse_pos };
+                } else if mouse.button == Some(PointerButton::Secondary) {
+                    next_action = MouseAction::RightDown { pos: mouse_pos };
                 }
             }
             MouseAction::LeftOnce { pos, time } => {
                 let during_mills =
                     time.elapsed().map(|x| x.as_millis()).unwrap_or(u128::MAX);
                 match (
-                    mouse.button.is_primary(),
-                    mouse.pos == pos,
+                    mouse.button == Some(PointerButton::Primary),
+                    mouse_pos == pos,
                     during_mills < CLICK_THRESHOLD,
                 ) {
                     (true, true, true) => {
                         next_action = MouseAction::LeftOnceAndDown { pos, time };
                     }
                     (true, _, _) => {
-                        next_action = MouseAction::LeftDown { pos: mouse.pos };
+                        next_action = MouseAction::LeftDown { pos: mouse_pos };
                     }
                     _ => {}
                 }
@@ -250,12 +254,17 @@ impl TerminalView {
         self.current_mouse_action = next_action;
     }
 
-    fn update_mouse_action_by_up(&mut self, mouse: &PointerInputEvent) {
+    fn update_mouse_action_by_up(&mut self, mouse: &PointerButtonEvent) {
         let mut next_action = MouseAction::None;
+        let mouse_pos = mouse.state.logical_point();
+
         match self.current_mouse_action {
             MouseAction::None => {}
             MouseAction::LeftDown { pos } => {
-                match (mouse.button.is_primary(), mouse.pos == pos) {
+                match (
+                    mouse.button == Some(PointerButton::Primary),
+                    mouse_pos == pos,
+                ) {
                     (true, true) => {
                         next_action = MouseAction::LeftOnce {
                             pos,
@@ -265,7 +274,7 @@ impl TerminalView {
                     (true, false) => {
                         next_action = MouseAction::LeftSelect {
                             start_pos: pos,
-                            end_pos: mouse.pos,
+                            end_pos: mouse_pos,
                         };
                     }
                     _ => {}
@@ -277,8 +286,8 @@ impl TerminalView {
                 let during_mills =
                     time.elapsed().map(|x| x.as_millis()).unwrap_or(u128::MAX);
                 match (
-                    mouse.button.is_primary(),
-                    mouse.pos == pos,
+                    mouse.button == Some(PointerButton::Primary),
+                    mouse_pos == pos,
                     during_mills < CLICK_THRESHOLD,
                 ) {
                     (true, true, true) => {
@@ -286,14 +295,14 @@ impl TerminalView {
                     }
                     (true, true, false) => {
                         next_action = MouseAction::LeftOnce {
-                            pos: mouse.pos,
+                            pos: mouse_pos,
                             time: SystemTime::now(),
                         };
                     }
                     (true, false, _) => {
                         next_action = MouseAction::LeftSelect {
                             start_pos: pos,
-                            end_pos: mouse.pos,
+                            end_pos: mouse_pos,
                         };
                     }
                     _ => {}
@@ -301,7 +310,8 @@ impl TerminalView {
             }
             MouseAction::LeftDouble { .. } => {}
             MouseAction::RightDown { pos } => {
-                if mouse.button.is_secondary() && mouse.pos == pos {
+                if mouse.button == Some(PointerButton::Secondary) && mouse_pos == pos
+                {
                     next_action = MouseAction::RightOnce { pos };
                 }
             }
@@ -415,7 +425,7 @@ impl TerminalView {
             if cell.c != ' ' && cell.c != '\t' {
                 let mut attrs = attrs.clone().color(fg);
                 if bold {
-                    attrs = attrs.weight(Weight::BOLD);
+                    attrs = attrs.weight(FontWeight::BOLD);
                 }
                 line_content.chars.push((cell.c, attrs, x, char_y));
             }
@@ -480,7 +490,7 @@ impl TerminalView {
                 AttrsList::new(attr.clone()),
                 None,
             );
-            cx.draw_text(&text_layout, Point::new(*x, *y));
+            text_layout.draw(cx, Point::new(*x, *y));
         }
     }
 }
@@ -496,22 +506,18 @@ impl View for TerminalView {
         self.id
     }
 
-    fn event_before_children(
-        &mut self,
-        _cx: &mut EventCx,
-        event: &Event,
-    ) -> EventPropagation {
-        match event {
-            Event::PointerDown(e) => {
-                self.update_mouse_action_by_down(e);
+    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
+        match &cx.event {
+            Event::Pointer(PointerEvent::Down(e)) => {
+                self.update_mouse_action_by_down(&e);
             }
-            Event::PointerUp(e) => {
-                self.update_mouse_action_by_up(e);
+            Event::Pointer(PointerEvent::Up(e)) => {
+                self.update_mouse_action_by_up(&e);
                 let mut clear_selection = false;
                 match self.current_mouse_action {
                     MouseAction::LeftOnce { pos, .. } => {
                         clear_selection = true;
-                        if e.modifiers.control() && self.click(pos).is_some() {
+                        if e.state.modifiers.ctrl() && self.click(pos).is_some() {
                             return EventPropagation::Stop;
                         }
                     }
@@ -525,7 +531,7 @@ impl View for TerminalView {
                             .update(self.get_terminal_point(end_pos), Side::Right);
                         selection.include_all();
                         self.raw.write().term.selection = Some(selection);
-                        _cx.app_state_mut().request_paint(self.id);
+                        cx.window_state.request_paint(self.id);
                     }
                     MouseAction::LeftDouble { pos } => {
                         let position = self.get_terminal_point(pos);
@@ -541,7 +547,7 @@ impl View for TerminalView {
                         selection.update(end_point, Side::Right);
                         selection.include_all();
                         raw.term.selection = Some(selection);
-                        _cx.app_state_mut().request_paint(self.id);
+                        cx.window_state.request_paint(self.id);
                     }
                     MouseAction::RightOnce { pos } => {
                         let position = self.get_terminal_point(pos);
@@ -571,7 +577,7 @@ impl View for TerminalView {
                 }
                 if clear_selection {
                     self.raw.write().term.selection = None;
-                    _cx.app_state_mut().request_paint(self.id);
+                    cx.window_state.request_paint(self.id);
                 }
             }
             _ => {}
@@ -594,37 +600,37 @@ impl View for TerminalView {
                     self.raw = raw;
                 }
             }
-            cx.app_state_mut().request_paint(self.id);
+            cx.window_state.request_paint(self.id);
         }
     }
 
-    fn layout(
-        &mut self,
-        cx: &mut floem::context::LayoutCx,
-    ) -> floem::taffy::prelude::NodeId {
-        cx.layout_node(self.id, false, |_cx| Vec::new())
-    }
+    // fn layout(
+    //     &mut self,
+    //     cx: &mut floem::context::LayoutCx,
+    // ) -> floem::taffy::prelude::NodeId {
+    //     cx.layout_node(self.id, false, |_cx| Vec::new())
+    // }
 
-    fn compute_layout(
-        &mut self,
-        _cx: &mut floem::context::ComputeLayoutCx,
-    ) -> Option<Rect> {
-        let layout = self.id.get_layout().unwrap_or_default();
-        let size = layout.size;
-        let size = Size::new(size.width as f64, size.height as f64);
-        if size.is_zero_area() {
-            return None;
-        }
-        if size != self.size {
-            self.size = size;
-            let (width, height) = self.terminal_size();
-            let term_size = TermSize::new(width, height);
-            self.raw.write().term.resize(term_size);
-            self.proxy.terminal_resize(self.term_id, width, height);
-        }
+    // fn compute_layout(
+    //     &mut self,
+    //     _cx: &mut floem::context::ComputeLayoutCx,
+    // ) -> Option<Rect> {
+    //     let layout = self.id.get_layout().unwrap_or_default();
+    //     let size = layout.size;
+    //     let size = Size::new(size.width as f64, size.height as f64);
+    //     if size.is_zero_area() {
+    //         return None;
+    //     }
+    //     if size != self.size {
+    //         self.size = size;
+    //         let (width, height) = self.terminal_size();
+    //         let term_size = TermSize::new(width, height);
+    //         self.raw.write().term.resize(term_size);
+    //         self.proxy.terminal_resize(self.term_id, width, height);
+    //     }
 
-        None
-    }
+    //     None
+    // }
 
     fn paint(&mut self, cx: &mut floem::context::PaintCx) {
         let config = self.config.get_untracked();
@@ -648,8 +654,8 @@ impl View for TerminalView {
                 ),
                 None,
             );
-            cx.draw_text(
-                &text_layout,
+            text_layout.draw(
+                cx,
                 Point::new(6.0, 0.0 + (line_height - char_size.height) / 2.0),
             );
             return;

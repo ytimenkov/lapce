@@ -14,20 +14,20 @@ use alacritty_terminal::vte::ansi::Handler;
 use floem::{
     ViewId,
     action::{TimerToken, open_file, remove_overlay},
-    ext_event::{create_ext_action, create_signal_from_channel},
+    ext_event::create_ext_action,
     file::FileDialogOptions,
-    keyboard::Modifiers,
     kurbo::Size,
     peniko::kurbo::{Point, Rect, Vec2},
+    prelude::Modifiers,
     prelude::SignalTrack,
     reactive::{
         Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
         WriteSignal, use_context,
     },
+    receiver_signal::ChannelSignal,
     text::{Attrs, AttrsList, FamilyOwned, LineHeightValue, TextLayout},
     views::editor::core::buffer::rope_text::RopeText,
 };
-use im::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use lapce_core::{
@@ -486,7 +486,7 @@ impl WindowTabData {
                     cx,
                     panel_order,
                     panel_available_size,
-                    im::HashMap::new(),
+                    imbl::HashMap::new(),
                     common.clone(),
                 )
             });
@@ -529,7 +529,7 @@ impl WindowTabData {
         );
 
         {
-            let notification = create_signal_from_channel(term_notification_rx);
+            let notification = ChannelSignal::new(term_notification_rx);
             let terminal = terminal.clone();
             cx.create_effect(move |_| {
                 notification.with(|notification| {
@@ -672,7 +672,7 @@ impl WindowTabData {
                 .proxy
                 .update_plugin_configs(config.plugins.clone());
             if config.core.auto_reload_plugin {
-                let mut plugin_metas: HashMap<
+                let mut plugin_metas: imbl::HashMap<
                     String,
                     lapce_rpc::plugin::VoltMetadata,
                 > = self
@@ -2177,7 +2177,7 @@ impl WindowTabData {
             }
             CoreNotification::PublishDiagnostics { diagnostics } => {
                 let path = path_from_url(&diagnostics.uri);
-                let diagnostics: im::Vector<Diagnostic> = diagnostics
+                let diagnostics: imbl::Vector<Diagnostic> = diagnostics
                     .diagnostics
                     .clone()
                     .into_iter()
@@ -2954,7 +2954,7 @@ impl WindowTabData {
         mouse_click: bool,
         plugin_id: PluginId,
         offset: usize,
-        lens: im::Vector<CodeLens>,
+        lens: imbl::Vector<CodeLens>,
     ) {
         self.common
             .internal_command

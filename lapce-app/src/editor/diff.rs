@@ -2,8 +2,10 @@ use std::{rc::Rc, sync::atomic};
 
 use floem::{
     View,
-    event::{Event, EventListener},
+    event::{Event, PointerScrollEventExt},
     ext_event::create_ext_action,
+    kurbo::Size,
+    prelude::listener as EventListener,
     reactive::{RwSignal, Scope, SignalGet, SignalUpdate, SignalWith},
     style::CursorStyle,
     views::{
@@ -376,7 +378,7 @@ pub fn diff_show_more_section_view(
                 }),
                 label(|| "Expand All".to_string()).style(|s| s.margin_left(6.0)),
             ))
-            .on_event_stop(EventListener::PointerDown, move |_| {})
+            .on_event_stop(EventListener::PointerDown, move |_, _| {})
             .on_click_stop(move |_event| {
                 left_editor_view.update(|editor_view| {
                     if let EditorViewKind::Diff(diff_info) = editor_view {
@@ -417,7 +419,7 @@ pub fn diff_show_more_section_view(
                 ),
                 label(|| "Expand Up".to_string()).style(|s| s.margin_left(6.0)),
             ))
-            .on_event_stop(EventListener::PointerDown, move |_| {})
+            .on_event_stop(EventListener::PointerDown, move |_, _| {})
             .on_click_stop(move |_event| {
                 left_editor_view.update(|editor_view| {
                     if let EditorViewKind::Diff(diff_info) = editor_view {
@@ -458,7 +460,7 @@ pub fn diff_show_more_section_view(
                 ),
                 label(|| "Expand Down".to_string()).style(|s| s.margin_left(6.0)),
             ))
-            .on_event_stop(EventListener::PointerDown, move |_| {})
+            .on_event_stop(EventListener::PointerDown, move |_, _| {})
             .on_click_stop(move |_event| {
                 left_editor_view.update(|editor_view| {
                     if let EditorViewKind::Diff(diff_info) = editor_view {
@@ -488,10 +490,12 @@ pub fn diff_show_more_section_view(
                     .hover(|s| s.cursor(CursorStyle::Pointer))
             }),
         ))
-        .on_event_cont(EventListener::PointerWheel, move |event| {
-            if let Event::PointerWheel(event) = event {
-                right_scroll_delta.set(event.delta);
-            }
+        .on_event_cont(EventListener::PointerWheel, move |_, event| {
+            let line_height = config.get().editor.line_height() as f64;
+            right_scroll_delta.set(event.resolve_to_points(
+                Some(Size::new(line_height, line_height)),
+                Some(viewport.get_untracked().size()),
+            ));
         })
         .style(move |s| {
             let right_screen_lines = right_screen_lines.get();

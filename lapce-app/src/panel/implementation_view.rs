@@ -5,11 +5,10 @@ use floem::{
     reactive::{RwSignal, Scope, SignalGet, SignalUpdate},
     style::CursorStyle,
     views::{
-        Decorators, VirtualVector, container, label, scroll, stack, svg,
+        Decorators, Scroll, VirtualVector, container, label, stack, svg,
         virtual_stack,
     },
 };
-use im::HashMap;
 use itertools::Itertools;
 use lapce_rpc::file_line::FileLine;
 use lsp_types::{Location, SymbolKind, request::GotoImplementationResponse};
@@ -38,7 +37,7 @@ pub fn common_reference_panel(
 ) -> impl View {
     let config = window_tab_data.common.config;
     let ui_line_height = window_tab_data.common.ui_line_height;
-    scroll(
+    Scroll::new(
         virtual_stack(
             each_fn,
             move |(_, _, data)| data.view_id(),
@@ -202,7 +201,8 @@ pub fn init_implementation_root(
     items: Vec<FileLine>,
     scope: Scope,
 ) -> ReferencesRoot {
-    let mut refs_map: HashMap<PathBuf, HashMap<u32, Reference>> = HashMap::new();
+    let mut refs_map: imbl::HashMap<PathBuf, imbl::HashMap<u32, Reference>> =
+        imbl::HashMap::new();
     for item in items {
         let entry = refs_map.entry(item.path.clone()).or_default();
         (*entry).insert(
@@ -279,7 +279,7 @@ impl VirtualVector<(usize, usize, ReferenceLocation)> for ReferencesRoot {
     }
 
     fn slice(
-        &mut self,
+        &self,
         range: std::ops::Range<usize>,
     ) -> impl Iterator<Item = (usize, usize, ReferenceLocation)> {
         let min = range.start;

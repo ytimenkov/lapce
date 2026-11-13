@@ -8,17 +8,19 @@ use anyhow::Result;
 use floem::{
     IntoView, View,
     action::show_context_menu,
+    context::LayoutChanged,
     ext_event::create_ext_action,
-    keyboard::Modifiers,
     kurbo::Rect,
-    menu::{Menu, MenuItem},
+    menu::Menu,
+    prelude::Modifiers,
     reactive::{
         RwSignal, Scope, SignalGet, SignalUpdate, SignalWith, create_effect,
         create_memo, create_rw_signal, use_context,
     },
     style::CursorStyle,
+    text::{Attrs, AttrsList},
     views::{
-        Decorators, container, dyn_container, dyn_stack, empty, img, label,
+        Decorators, Scroll, container, dyn_container, dyn_stack, empty, img, label,
         rich_text, scroll, stack, svg, text,
     },
 };
@@ -103,7 +105,7 @@ pub struct AvailableVoltList {
 pub struct PluginData {
     pub installed: RwSignal<IndexMap<VoltID, InstalledVoltData>>,
     pub available: AvailableVoltList,
-    pub all: RwSignal<im::HashMap<VoltID, AvailableVoltData>>,
+    pub all: RwSignal<imbl::HashMap<VoltID, AvailableVoltData>>,
     pub disabled: RwSignal<HashSet<VoltID>>,
     pub workspace_disabled: RwSignal<HashSet<VoltID>>,
     pub common: Rc<CommonData>,
@@ -177,7 +179,7 @@ impl PluginData {
         let plugin = Self {
             installed,
             available,
-            all: cx.create_rw_signal(im::HashMap::new()),
+            all: cx.create_rw_signal(imbl::HashMap::new()),
             disabled,
             workspace_disabled,
             common,
@@ -609,91 +611,93 @@ impl PluginData {
 
     pub fn plugin_controls(&self, meta: VoltMetadata, latest: VoltInfo) -> Menu {
         let volt_id = meta.id();
-        let mut menu = Menu::new("");
+        let mut menu = Menu::new();
         if meta.version != latest.version {
             menu = menu
-                .entry(MenuItem::new("Upgrade Plugin").action({
-                    let plugin = self.clone();
-                    let info = latest.clone();
-                    move || {
-                        plugin.install_volt(info.clone());
-                    }
-                }))
+                .item("Upgrade Plugin", move |i| {
+                    i.action({
+                        let plugin = self.clone();
+                        let info = latest.clone();
+                        move || {
+                            plugin.install_volt(info.clone());
+                        }
+                    })
+                })
                 .separator();
         }
         menu = menu
-            .entry(MenuItem::new("Reload Plugin").action({
-                let plugin = self.clone();
-                let meta = meta.clone();
-                move || {
-                    plugin.reload_volt(meta.clone());
-                }
-            }))
+            .item("Reload Plugin", |i| {
+                i.action({
+                    let plugin = self.clone();
+                    let meta = meta.clone();
+                    move || {
+                        plugin.reload_volt(meta.clone());
+                    }
+                })
+            })
             .separator()
-            .entry(
-                MenuItem::new("Enable")
-                    .enabled(
-                        self.disabled
-                            .with_untracked(|disabled| disabled.contains(&volt_id)),
-                    )
-                    .action({
-                        let plugin = self.clone();
-                        let volt = meta.info();
-                        move || {
-                            plugin.enable_volt(volt.clone());
-                        }
-                    }),
-            )
-            .entry(
-                MenuItem::new("Disable")
-                    .enabled(
-                        self.disabled
-                            .with_untracked(|disabled| !disabled.contains(&volt_id)),
-                    )
-                    .action({
-                        let plugin = self.clone();
-                        let volt = meta.info();
-                        move || {
-                            plugin.disable_volt(volt.clone());
-                        }
-                    }),
-            )
+            .item("Enable", |i| {
+                i.enabled(
+                    self.disabled
+                        .with_untracked(|disabled| disabled.contains(&volt_id)),
+                )
+                .action({
+                    let plugin = self.clone();
+                    let volt = meta.info();
+                    move || {
+                        plugin.enable_volt(volt.clone());
+                    }
+                })
+            })
+            .item("Disable", |i| {
+                i.enabled(
+                    self.disabled
+                        .with_untracked(|disabled| !disabled.contains(&volt_id)),
+                )
+                .action({
+                    let plugin = self.clone();
+                    let volt = meta.info();
+                    move || {
+                        plugin.disable_volt(volt.clone());
+                    }
+                })
+            })
             .separator()
-            .entry(
-                MenuItem::new("Enable For Workspace")
-                    .enabled(
-                        self.workspace_disabled
-                            .with_untracked(|disabled| disabled.contains(&volt_id)),
-                    )
-                    .action({
-                        let plugin = self.clone();
-                        let volt = meta.info();
-                        move || {
-                            plugin.enable_volt_for_ws(volt.clone());
-                        }
-                    }),
-            )
-            .entry(
-                MenuItem::new("Disable For Workspace")
-                    .enabled(
-                        self.workspace_disabled
-                            .with_untracked(|disabled| !disabled.contains(&volt_id)),
-                    )
-                    .action({
-                        let plugin = self.clone();
-                        let volt = meta.info();
-                        move || {
-                            plugin.disable_volt_for_ws(volt.clone());
-                        }
-                    }),
-            )
+            .item("Enable For Workspace", |i| {
+                i.enabled(
+                    self.workspace_disabled
+                        .with_untracked(|disabled| disabled.contains(&volt_id)),
+                )
+                .action({
+                    let plugin = self.clone();
+                    let volt = meta.info();
+                    move || {
+                        plugin.enable_volt_for_ws(volt.clone());
+                    }
+                })
+            })
+            .item("Disable For Workspace", |i| {
+                i.enabled(
+                    self.workspace_disabled
+                        .with_untracked(|disabled| !disabled.contains(&volt_id)),
+                )
+                .action({
+                    let plugin = self.clone();
+                    let volt = meta.info();
+                    move || {
+                        plugin.disable_volt_for_ws(volt.clone());
+                    }
+                })
+            })
             .separator()
-            .entry(MenuItem::new("Uninstall").action({
-                let plugin = self.clone();
-                move || {
-                    plugin.uninstall_volt(meta.clone());
-                }
-            }));
+            .item("Uninstall", move |i| {
+                i.action({
+                    let plugin = self.clone();
+                    move || {
+                        plugin.uninstall_volt(meta.clone());
+                    }
+                })
+            });
         menu
     }
 }
@@ -821,7 +825,7 @@ pub fn plugin_info_view(plugin: PluginData, volt: VoltID) -> impl View {
         ))
     };
 
-    scroll(
+    Scroll::new(
         dyn_container(
             move || plugin_info.get(),
             move |plugin_info| {
@@ -915,11 +919,14 @@ pub fn plugin_info_view(plugin: PluginData, volt: VoltID) -> impl View {
                         .style(|s| s.flex_col().line_height(1.6)),
                     ))
                     .style(|s| s.absolute())
-                    .on_resize(move |rect| {
-                        if header_rect.get_untracked() != rect {
-                            header_rect.set(rect);
-                        }
-                    }),
+                    .on_event_stop(
+                        LayoutChanged::listener(),
+                        move |_, LayoutChanged { new_box, .. }| {
+                            if header_rect.get_untracked() != *new_box {
+                                header_rect.set(*new_box);
+                            }
+                        },
+                    ),
                     empty().style(move |s| {
                         let rect = header_rect.get();
                         s.size(rect.width(), rect.height()).pointer_events_none()
@@ -953,6 +960,23 @@ pub fn plugin_info_view(plugin: PluginData, volt: VoltID) -> impl View {
                             }
                         });
                         {
+                            let markdown_attrs = {
+                                let config = config.clone();
+                                move || {
+                                    AttrsList::new(
+                                        Attrs::new()
+                                            .font_size(
+                                                config.get().ui.font_size() as f32
+                                            )
+                                            .line_height(
+                                                floem::unit::LineHeightValue::Normal(
+                                                    1.8,
+                                                ),
+                                            ),
+                                    )
+                                }
+                            };
+
                             let id = AtomicU64::new(0);
                             dyn_stack(
                                 move || {
@@ -972,8 +996,20 @@ pub fn plugin_info_view(plugin: PluginData, volt: VoltID) -> impl View {
                                 },
                                 move |content| match content {
                                     MarkdownContent::Text(text_layout) => container(
-                                        rich_text(move || text_layout.clone())
-                                            .style(|s| s.width_full()),
+                                        {
+                                            // TODO: Markdown rendering needs to be reworked
+                                            let text =
+                                                text_layout.text().to_string();
+
+                                            rich_text(
+                                                text.clone(),
+                                                markdown_attrs(),
+                                                move || {
+                                                    (text.clone(), markdown_attrs())
+                                                },
+                                            )
+                                        }
+                                        .style(|s| s.width_full()),
                                     )
                                     .style(|s| s.width_full()),
                                     MarkdownContent::Image { .. } => {
@@ -1013,11 +1049,15 @@ pub fn plugin_info_view(plugin: PluginData, volt: VoltID) -> impl View {
         )
         .style(|s| s.min_width_full().justify_center()),
     )
-    .on_resize(move |rect| {
-        if scroll_width.get_untracked() != rect.width() {
-            scroll_width.set(rect.width());
-        }
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            let width = new_box.width();
+            if scroll_width.get_untracked() != width {
+                scroll_width.set(width);
+            }
+        },
+    )
     .style(|s| s.absolute().size_full())
     .debug_name("Plugin Info")
 }

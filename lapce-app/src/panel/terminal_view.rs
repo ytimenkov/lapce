@@ -3,15 +3,17 @@ use std::rc::Rc;
 use floem::{
     View, ViewId,
     action::show_context_menu,
-    event::{Event, EventListener, EventPropagation},
+    context::LayoutChanged,
+    event::{
+        Event, EventPropagation, PointerScrollEventExt, listener as EventListener,
+    },
     kurbo::Size,
-    menu::{Menu, MenuItem},
+    menu::Menu,
     reactive::{SignalGet, SignalUpdate, SignalWith, create_rw_signal},
     style::CursorStyle,
     views::{
-        Decorators, container, dyn_stack, empty, label,
-        scroll::{Thickness, VerticalScrollAsHorizontal, scroll},
-        stack, svg, tab,
+        Decorators, Scroll, container, dyn_stack, empty, label,
+        scroll::VerticalScrollAsHorizontal, stack, svg, tab,
     },
 };
 use lapce_rpc::terminal::TermId;
@@ -35,7 +37,7 @@ pub fn terminal_panel(window_tab_data: Rc<WindowTabData>) -> impl View {
         terminal_tab_header(window_tab_data.clone()),
         terminal_tab_content(window_tab_data.clone()),
     ))
-    .on_event_cont(EventListener::PointerDown, move |_| {
+    .on_event_cont(EventListener::PointerDown, move |_, _| {
         if focus.get_untracked() != Focus::Panel(PanelKind::Terminal) {
             focus.set(Focus::Panel(PanelKind::Terminal));
         }
@@ -57,7 +59,7 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
     let workbench_command = window_tab_data.common.workbench_command;
 
     stack((
-        scroll(dyn_stack(
+        Scroll::new(dyn_stack(
             move || {
                 let tabs = terminal.tab_info.with(|info| info.tabs.clone());
                 for (i, (index, _)) in tabs.iter().enumerate() {
@@ -193,7 +195,7 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
                 .style(|s| s.cursor(CursorStyle::Pointer))
                 .on_event_cont(
                     EventListener::PointerDown,
-                    move |_| {
+                    move |_, _| {
                         if tab_info.with_untracked(|tab| tab.active)
                             != index.get_untracked()
                         {
@@ -206,18 +208,20 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
                 )
             },
         ))
-        .on_resize(move |rect| {
-            if rect.size() != scroll_size.get_untracked() {
-                scroll_size.set(rect.size());
-            }
-        })
+        .on_event_stop(
+            LayoutChanged::listener(),
+            move |_, LayoutChanged { new_box, .. }| {
+                if new_box.size() != scroll_size.get_untracked() {
+                    scroll_size.set(new_box.size());
+                }
+            },
+        )
         .style(move |s| {
             let header_width = header_width.get();
             let icon_width = icon_width.get();
             s.set(VerticalScrollAsHorizontal, true)
                 .absolute()
                 .max_width(header_width - icon_width)
-                .set(Thickness, 3)
         }),
         empty().style(move |s| {
             let size = scroll_size.get();
@@ -233,23 +237,29 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
             || "New Terminal",
             config,
         ))
-        .on_resize(move |rect| {
-            let width = rect.size().width;
-            if icon_width.get_untracked() != width {
-                icon_width.set(width);
-            }
-        })
+        .on_event_stop(
+            LayoutChanged::listener(),
+            move |_, LayoutChanged { new_box, .. }| {
+                let width = new_box.width();
+                if icon_width.get_untracked() != width {
+                    icon_width.set(width);
+                }
+            },
+        )
         .style(|s| s.padding_horiz(10)),
     ))
-    .on_resize(move |rect| {
-        let size = rect.size();
-        if header_width.get_untracked() != size.width {
-            header_width.set(size.width);
-        }
-        if header_height.get_untracked() != size.height {
-            header_height.set(size.height);
-        }
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            let size = new_box.size();
+            if header_width.get_untracked() != size.width {
+                header_width.set(size.width);
+            }
+            if header_height.get_untracked() != size.height {
+                header_height.set(size.height);
+            }
+        },
+    )
     .on_double_click(move |_| {
         window_tab_data
             .panel
@@ -303,7 +313,7 @@ fn terminal_tab_split(
                 let view_id = terminal_view.id();
                 let have_task = terminal.run_debug.get_untracked().is_some();
                 terminal_view
-                    .on_event_cont(EventListener::PointerDown, move |_| {
+                    .on_event_cont(EventListener::PointerDown, move |_, _| {
                         active.set(index.get_untracked());
                     })
                     .on_secondary_click_stop(move |_| {
@@ -317,13 +327,11 @@ fn terminal_tab_split(
                             );
                         }
                     })
-                    .on_event(EventListener::PointerWheel, move |event| {
-                        if let Event::PointerWheel(pointer_event) = event {
-                            terminal.clone().wheel_scroll(pointer_event.delta.y);
-                            EventPropagation::Stop
-                        } else {
-                            EventPropagation::Continue
-                        }
+                    .on_event_stop(EventListener::PointerWheel, move |_, event| {
+                        // TODO: Maybe should be handled differently, wheel_scroll internally uses line height, etc.
+                        terminal
+                            .clone()
+                            .wheel_scroll(event.resolve_to_points(None, None).y);
                     })
                     .on_cleanup(move || {
                         terminal_scope.dispose();
@@ -351,7 +359,7 @@ fn terminal_tab_split(
 fn terminal_tab_content(window_tab_data: Rc<WindowTabData>) -> impl View {
     let terminal = window_tab_data.terminal.clone();
     tab(
-        move || terminal.tab_info.with(|info| info.active),
+        move || terminal.tab_info.with(|info| Some(info.active)),
         move || terminal.tab_info.with(|info| info.tabs.clone()),
         |(_, tab)| tab.terminal_tab_id,
         move |(tab_index, tab)| {
@@ -368,20 +376,26 @@ fn tab_secondary_click(
     terminal_index: usize,
     term_id: TermId,
 ) {
-    let mut menu = Menu::new("");
+    let mut menu = Menu::new();
     menu = menu
-        .entry(MenuItem::new("Stop").action(move || {
-            internal_command.send(InternalCommand::StopTerminal { term_id });
-        }))
-        .entry(MenuItem::new("Restart").action(move || {
-            internal_command.send(InternalCommand::RestartTerminal { term_id });
-        }))
-        .entry(MenuItem::new("Clear All").action(move || {
-            internal_command.send(InternalCommand::ClearTerminalBuffer {
-                view_id,
-                tab_index,
-                terminal_index,
-            });
-        }));
+        .item("Stop", move |i| {
+            i.action(move || {
+                internal_command.send(InternalCommand::StopTerminal { term_id });
+            })
+        })
+        .item("Restart", move |i| {
+            i.action(move || {
+                internal_command.send(InternalCommand::RestartTerminal { term_id });
+            })
+        })
+        .item("Clear All", move |i| {
+            i.action(move || {
+                internal_command.send(InternalCommand::ClearTerminalBuffer {
+                    view_id,
+                    tab_index,
+                    terminal_index,
+                });
+            })
+        });
     show_context_menu(menu, None);
 }

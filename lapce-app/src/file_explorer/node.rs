@@ -21,7 +21,7 @@ impl VirtualVector<FileNodeViewData> for FileNodeVirtualList {
     }
 
     fn slice(
-        &mut self,
+        &self,
         range: std::ops::Range<usize>,
     ) -> impl Iterator<Item = FileNodeViewData> {
         let naming = &self.naming;

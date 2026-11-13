@@ -2,15 +2,16 @@ use std::{rc::Rc, sync::Arc};
 
 use floem::{
     View,
-    event::EventListener,
+    context::LayoutChanged,
     peniko::Color,
+    prelude::listener as EventListener,
     reactive::{
         ReadSignal, RwSignal, SignalGet, SignalUpdate, SignalWith, create_rw_signal,
     },
     style::CursorStyle,
-    text::Style as FontStyle,
+    text::FontStyle,
     views::{
-        Decorators, container, dyn_stack, label, scroll, stack, svg, text,
+        Decorators, Scroll, container, dyn_stack, label, stack, svg, text,
         virtual_stack,
     },
 };
@@ -248,7 +249,7 @@ fn debug_processes(
     terminal: TerminalPanelData,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
-    scroll({
+    Scroll::new({
         let terminal = terminal.clone();
         let local_terminal = terminal.clone();
         dyn_stack(
@@ -301,10 +302,10 @@ fn debug_processes(
                     local_terminal.debug.active_term.set(Some(term_id));
                     local_terminal.focus_terminal(term_id);
                 })
-                .on_event_stop(EventListener::PointerEnter, move |_| {
+                .on_event_stop(EventListener::PointerEnter, move |_, _| {
                     is_hovered.set(true);
                 })
-                .on_event_stop(EventListener::PointerLeave, move |_| {
+                .on_event_stop(EventListener::PointerLeave, move |_, _| {
                     is_hovered.set(false);
                 })
                 .style(move |s| {
@@ -336,7 +337,7 @@ fn variables_view(window_tab_data: Rc<WindowTabData>) -> impl View {
     let ui_line_height = window_tab_data.common.ui_line_height;
     let config = window_tab_data.common.config;
     container(
-        scroll(
+        Scroll::new(
             virtual_stack(
                 move || {
                     let dap = terminal.get_active_dap(true);
@@ -485,7 +486,7 @@ fn debug_stack_frames(
                 if expanded {
                     stack_trace.frames.get()
                 } else {
-                    im::Vector::new()
+                    imbl::Vector::new()
                 }
             },
             |frame| frame.id,
@@ -572,7 +573,7 @@ fn debug_stack_traces(
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
     container(
-        scroll({
+        Scroll::new({
             let local_terminal = terminal.clone();
             dyn_stack(
                 move || {
@@ -634,7 +635,7 @@ fn breakpoints_view(window_tab_data: Rc<WindowTabData>) -> impl View {
     let available_width = create_rw_signal(0.0);
     let internal_command = window_tab_data.common.internal_command;
     container(
-        scroll(
+        Scroll::new(
             dyn_stack(
                 move || {
                     breakpoints
@@ -684,7 +685,7 @@ fn breakpoints_view(window_tab_data: Rc<WindowTabData>) -> impl View {
                             || "Remove",
                             config,
                         )
-                        .on_event_stop(EventListener::PointerDown, |_| {}),
+                        .on_event_stop(EventListener::PointerDown, |_, _| {}),
                         checkbox(move || breakpoint.active, config)
                             .style(|s| {
                                 s.margin_right(6.0).cursor(CursorStyle::Pointer)
@@ -751,12 +752,15 @@ fn breakpoints_view(window_tab_data: Rc<WindowTabData>) -> impl View {
             )
             .style(|s| s.flex_col().line_height(1.6).width_pct(100.0)),
         )
-        .on_resize(move |rect| {
-            let width = rect.width();
-            if available_width.get_untracked() != width {
-                available_width.set(width);
-            }
-        })
+        .on_event_stop(
+            LayoutChanged::listener(),
+            move |_, LayoutChanged { new_box, .. }| {
+                let width = new_box.width();
+                if available_width.get_untracked() != width {
+                    available_width.set(width);
+                }
+            },
+        )
         .style(|s| s.absolute().size_pct(100.0, 100.0)),
     )
     .style(|s| s.size_pct(100.0, 100.0))

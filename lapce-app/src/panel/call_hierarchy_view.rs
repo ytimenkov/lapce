@@ -5,7 +5,7 @@ use floem::{
     reactive::{RwSignal, SignalGet, SignalUpdate, SignalWith},
     style::CursorStyle,
     views::{
-        Decorators, VirtualVector, container, empty, label, scroll, stack, svg,
+        Decorators, Scroll, VirtualVector, container, empty, label, stack, svg,
         virtual_stack,
     },
 };
@@ -109,7 +109,7 @@ impl VirtualVector<(usize, usize, RwSignal<CallHierarchyItemData>)> for VirtualL
     }
 
     fn slice(
-        &mut self,
+        &self,
         range: std::ops::Range<usize>,
     ) -> impl Iterator<Item = (usize, usize, RwSignal<CallHierarchyItemData>)> {
         if let Some(root) = &self.root {
@@ -130,7 +130,7 @@ pub fn show_hierarchy_panel(
     let config = call_hierarchy_data.common.config;
     let ui_line_height = call_hierarchy_data.common.ui_line_height;
     let scroll_to_line = call_hierarchy_data.scroll_to_line;
-    scroll(
+    Scroll::new(
         virtual_stack(
             move || VirtualList::new(call_hierarchy_data.root.get()),
             move |(_, _, item)| item.get_untracked().view_id,

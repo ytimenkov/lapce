@@ -8,7 +8,7 @@ use floem::{
         create_rw_signal,
     },
     style::{CursorStyle, Style},
-    views::{Decorators, container, dyn_stack, label, scroll, stack, svg},
+    views::{Decorators, Scroll, container, dyn_stack, label, stack, svg},
 };
 use lsp_types::{DiagnosticRelatedInformation, DiagnosticSeverity};
 
@@ -58,7 +58,7 @@ fn problem_section(
     let main_split = window_tab_data.main_split.clone();
     let internal_command = window_tab_data.common.internal_command;
     container({
-        scroll(
+        Scroll::new(
             dyn_stack(
                 move || main_split.diagnostics.get(),
                 |(p, _)| p.clone(),
@@ -90,7 +90,7 @@ fn file_view(
 ) -> impl View {
     let collapsed = create_rw_signal(false);
 
-    let diagnostics = create_rw_signal(im::Vector::new());
+    let diagnostics = create_rw_signal(imbl::Vector::new());
     create_effect(move |_| {
         let span = diagnostic_data.diagnostics_span.get();
         let d = if !span.is_empty() {
@@ -105,10 +105,10 @@ fn file_view(
                         None
                     }
                 })
-                .collect::<im::Vector<EditorDiagnostic>>()
+                .collect::<imbl::Vector<EditorDiagnostic>>()
         } else {
             let diagnostics = diagnostic_data.diagnostics.get();
-            let diagnostics: im::Vector<EditorDiagnostic> = diagnostics
+            let diagnostics: imbl::Vector<EditorDiagnostic> = diagnostics
                 .into_iter()
                 .filter_map(|d| {
                     if d.severity == Some(severity) {
@@ -225,7 +225,7 @@ fn file_view(
         dyn_stack(
             move || {
                 if collapsed.get() {
-                    im::Vector::new()
+                    imbl::Vector::new()
                 } else {
                     diagnostics.get()
                 }

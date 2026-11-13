@@ -18,34 +18,37 @@ use clap::Parser;
 use floem::{
     IntoView, View,
     action::show_context_menu,
-    event::{Event, EventListener, EventPropagation},
-    ext_event::{create_ext_action, create_signal_from_channel},
-    menu::{Menu, MenuItem},
+    context::LayoutChanged,
+    event::{EventPropagation, listener as EventListener},
+    ext_event::create_ext_action,
+    menu::Menu,
     peniko::{
         Color,
-        kurbo::{Point, Rect, Size},
+        kurbo::{Point, Rect, Size, Vec2},
     },
     prelude::SignalTrack,
     reactive::{
-        ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
-        create_effect, create_memo, create_rw_signal, provide_context, use_context,
+        Effect, Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate,
+        SignalWith, create_rw_signal,
     },
+    receiver_signal::ChannelSignal,
     style::{
-        AlignItems, CursorStyle, Display, FlexDirection, JustifyContent, Position,
-        Style,
+        AlignItems, CursorStyle, CustomStylable, Display, FlexDirection,
+        JustifyContent, Position, Style,
     },
     taffy::{
         Line,
         style_helpers::{self, auto, fr},
     },
-    text::{Style as FontStyle, Weight},
+    text::{Attrs, AttrsList, FontStyle, FontWeight},
+    ui_events::pointer::{PointerButton, PointerButtonEvent},
     unit::PxPctAuto,
     views::{
-        Decorators, VirtualVector, clip, container, drag_resize_window_area,
+        Decorators, Scroll, VirtualVector, clip, container, drag_resize_window_area,
         drag_window_area, dyn_stack,
         editor::{core::register::Clipboard, text::SystemClipboard},
         empty, label, rich_text,
-        scroll::{PropagatePointerWheel, VerticalScrollAsHorizontal, scroll},
+        scroll::{PropagatePointerWheel, ScrollChanged, VerticalScrollAsHorizontal},
         stack, svg, tab, text, tooltip, virtual_stack,
     },
     window::{ResizeDirection, WindowConfig, WindowId},
@@ -159,7 +162,7 @@ pub enum AppCommand {
 
 #[derive(Clone)]
 pub struct AppData {
-    pub windows: RwSignal<im::HashMap<WindowId, WindowData>>,
+    pub windows: RwSignal<imbl::HashMap<WindowId, WindowData>>,
     pub active_window: RwSignal<WindowId>,
     pub window_scale: RwSignal<f64>,
     pub app_command: Listener<AppCommand>,
@@ -171,6 +174,7 @@ pub struct AppData {
     pub config: RwSignal<Arc<LapceConfig>>,
     /// Paths to extra plugins to load
     pub plugin_paths: Arc<Vec<PathBuf>>,
+    pub db: Arc<LapceDb>,
 }
 
 impl AppData {
@@ -218,7 +222,7 @@ impl AppData {
                     .position(window.position.get_untracked() + (50.0, 50.0))
             })
             .or_else(|| {
-                let db: Arc<LapceDb> = use_context().unwrap();
+                let db: Arc<LapceDb> = floem::reactive::Context::get().unwrap();
                 db.get_window().ok().map(|info| {
                     self.default_window_config()
                         .size(info.size)
@@ -263,8 +267,7 @@ impl AppData {
     pub fn run_app_command(&self, cmd: AppCommand) {
         match cmd {
             AppCommand::SaveApp => {
-                let db: Arc<LapceDb> = use_context().unwrap();
-                if let Err(err) = db.save_app(self) {
+                if let Err(err) = self.db.save_app(self) {
                     tracing::error!("{:?}", err);
                 }
             }
@@ -272,9 +275,8 @@ impl AppData {
                 if self.app_terminated.get_untracked() {
                     return;
                 }
-                let db: Arc<LapceDb> = use_context().unwrap();
                 if self.windows.with_untracked(|w| w.len()) == 1 {
-                    if let Err(err) = db.insert_app(self.clone()) {
+                    if let Err(err) = self.db.insert_app(self.clone()) {
                         tracing::error!("{:?}", err);
                     }
                 }
@@ -285,7 +287,7 @@ impl AppData {
                 if let Some(window_data) = window_data {
                     window_data.scope.dispose();
                 }
-                if let Err(err) = db.save_app(self) {
+                if let Err(err) = self.db.save_app(self) {
                     tracing::error!("{:?}", err);
                 }
             }
@@ -457,7 +459,8 @@ impl AppData {
         info: WindowInfo,
         files: Vec<PathObject>,
     ) -> impl View + use<> {
-        let app_view_id = create_rw_signal(floem::ViewId::new());
+        let app_view_id = RwSignal::new(floem::ViewId::new());
+        floem::reactive::Context::provide(self.db.clone());
         let window_data = WindowData::new(
             window_id,
             app_view_id,
@@ -615,64 +618,51 @@ impl AppData {
 
         view.window_scale(move || window_scale.get())
             .keyboard_navigable()
-            .on_event(EventListener::KeyDown, move |event| {
-                if let Event::KeyDown(key_event) = event {
-                    if key_down_window_data.key_down(key_event) {
-                        view_id.request_focus();
-                    }
-                    EventPropagation::Stop
-                } else {
-                    EventPropagation::Continue
+            .on_event_stop(EventListener::KeyDown, move |cx, key_event| {
+                if key_down_window_data.key_down(key_event) {
+                    view_id.request_focus();
                 }
             })
-            .on_event(EventListener::PointerDown, {
+            .on_event_stop(EventListener::PointerDown, {
                 let window_data = window_data.clone();
-                move |event| {
-                    if let Event::PointerDown(pointer_event) = event {
-                        window_data.key_down(pointer_event);
-                        EventPropagation::Stop
-                    } else {
-                        EventPropagation::Continue
-                    }
+                move |cx, pointer_event| {
+                    window_data.key_down(pointer_event);
                 }
             })
-            .on_event_stop(EventListener::WindowResized, move |event| {
-                if let Event::WindowResized(size) = event {
-                    window_size.set(*size);
-                }
+            .on_event_stop(EventListener::WindowResized, move |cx, size| {
+                window_size.set(*size);
             })
-            .on_event_stop(EventListener::WindowMoved, move |event| {
-                if let Event::WindowMoved(point) = event {
-                    position.set(*point);
-                }
+            .on_event_stop(EventListener::WindowMoved, move |cx, point| {
+                position.set(*point);
             })
-            .on_event_stop(EventListener::WindowGotFocus, move |_| {
+            .on_event_stop(EventListener::WindowGainedFocus, move |_, _| {
                 app_command.send(AppCommand::WindowGotFocus(window_id));
             })
-            .on_event_stop(EventListener::WindowClosed, move |_| {
+            .on_event_stop(EventListener::WindowClosed, move |_, _| {
                 app_command.send(AppCommand::WindowClosed(window_id));
             })
-            .on_event_stop(EventListener::DroppedFile, move |event: &Event| {
-                if let Event::DroppedFile(file) = event {
-                    if file.path.is_dir() {
-                        app_command.send(AppCommand::NewWindow {
-                            folder: Some(file.path.clone()),
-                        });
-                    } else if let Some(win_tab_data) =
-                        window_data.active_window_tab()
-                    {
-                        win_tab_data.common.internal_command.send(
-                            InternalCommand::GoToLocation {
-                                location: EditorLocation {
-                                    path: file.path.clone(),
-                                    position: None,
-                                    scroll_offset: None,
-                                    ignore_unconfirmed: false,
-                                    same_editor_tab: false,
-                                },
+            .on_event_stop(EventListener::FileDragDrop, move |cx, file| {
+                // Only single file allowed. Could be .first(), but behaviour is non-intuitive.
+                // Alternatively we can iterate over paths.
+                let [ref path] = *file.paths else {
+                    return;
+                };
+                if path.is_dir() {
+                    app_command.send(AppCommand::NewWindow {
+                        folder: Some(path.clone()),
+                    });
+                } else if let Some(win_tab_data) = window_data.active_window_tab() {
+                    win_tab_data.common.internal_command.send(
+                        InternalCommand::GoToLocation {
+                            location: EditorLocation {
+                                path: path.clone(),
+                                position: None,
+                                scroll_offset: None,
+                                ignore_unconfirmed: false,
+                                same_editor_tab: false,
                             },
-                        )
-                    }
+                        },
+                    )
                 }
             })
             .debug_name("App View")
@@ -698,7 +688,7 @@ fn editor_tab_header(
         editor_tab.with_untracked(|editor_tab| editor_tab.editor_tab_id);
 
     let editor_tab_active =
-        create_memo(move |_| editor_tab.with(|editor_tab| editor_tab.active));
+        Memo::new(move |_| editor_tab.with(|editor_tab| editor_tab.active));
     let items = move || {
         let editor_tab = editor_tab.get();
         for (i, (index, _, _)) in editor_tab.children.iter().enumerate() {
@@ -733,7 +723,7 @@ fn editor_tab_header(
         let plugin = plugin.clone();
         let child_view = {
             let info = child.view_info(editors, diff_editors, plugin, config);
-            let hovered = create_rw_signal(false);
+            let hovered = RwSignal::new(false);
 
             use crate::config::ui::TabCloseButton;
 
@@ -802,11 +792,11 @@ fn editor_tab_header(
                 || "Close",
                 config,
             )
-            .on_event_stop(EventListener::PointerDown, |_| {})
-            .on_event_stop(EventListener::PointerEnter, move |_| {
+            .on_event_stop(EventListener::PointerDown, |_, _| {})
+            .on_event_stop(EventListener::PointerEnter, move |_, _| {
                 hovered.set(true);
             })
-            .on_event_stop(EventListener::PointerLeave, move |_| {
+            .on_event_stop(EventListener::PointerLeave, move |_, _| {
                 hovered.set(false);
             });
 
@@ -874,8 +864,8 @@ fn editor_tab_header(
             _ => None,
         };
 
-        let header_content_size = create_rw_signal(Size::ZERO);
-        let drag_over_left: RwSignal<Option<bool>> = create_rw_signal(None);
+        let header_content_size = RwSignal::new(Size::ZERO);
+        let drag_over_left: RwSignal<Option<bool>> = RwSignal::new(None);
         stack((
             child_view
                 .on_double_click_stop(move |_| {
@@ -883,9 +873,13 @@ fn editor_tab_header(
                         confirmed.set(true);
                     }
                 })
-                .on_event(EventListener::PointerDown, move |event| {
-                    if let Event::PointerDown(pointer_event) = event {
-                        if pointer_event.button.is_auxiliary() {
+                .on_event(
+                    EventListener::PointerDown,
+                    move |_, pointer_button_event| {
+                        if pointer_button_event
+                            .button
+                            .is_some_and(|button| button == PointerButton::Auxiliary)
+                        {
                             let editor_tab_id =
                                 editor_tab.with_untracked(|t| t.editor_tab_id);
                             internal_command.send(
@@ -901,11 +895,9 @@ fn editor_tab_header(
                             });
                             EventPropagation::Continue
                         }
-                    } else {
-                        EventPropagation::Continue
-                    }
-                })
-                .on_secondary_click_stop(move |_| {
+                    },
+                )
+                .on_event_stop(EventListener::SecondaryClick, move |_, _| {
                     let editor_tab_id =
                         editor_tab.with_untracked(|t| t.editor_tab_id);
 
@@ -915,15 +907,18 @@ fn editor_tab_header(
                         child_for_mouse_close_2.clone(),
                     );
                 })
-                .on_event_stop(EventListener::DragStart, move |_| {
+                .on_event_stop(EventListener::DragStart, move |_, _| {
                     dragging.set(Some((i, editor_tab_id)));
                 })
-                .on_event_stop(EventListener::DragEnd, move |_| {
+                .on_event_stop(EventListener::DragEnd, move |_, _| {
                     dragging.set(None);
                 })
-                .on_resize(move |rect| {
-                    header_content_size.set(rect.size());
-                })
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_, LayoutChanged { new_box, .. }| {
+                        header_content_size.set(new_box.size());
+                    },
+                )
                 .draggable()
                 .dragging_style(move |s| {
                     let config = config.get();
@@ -936,9 +931,7 @@ fn editor_tab_header(
                         )
                         .border_color(config.color(LapceColor::LAPCE_BORDER))
                 })
-                .style(|s| {
-                    s.align_items(Some(AlignItems::Center)).flex_grow(1.0f32)
-                }),
+                .style(|s| s.align_items(AlignItems::Center).flex_grow(1.0f32)),
             empty()
                 .style(move |s| {
                     s.size_full()
@@ -992,9 +985,12 @@ fn editor_tab_header(
                 })
                 .debug_name("Active Tab Indicator"),
         ))
-        .on_resize(move |rect| {
-            layout_rect.set(rect);
-        })
+        .on_event_stop(
+            LayoutChanged::listener(),
+            move |_, LayoutChanged { new_box, .. }| {
+                layout_rect.set(*new_box);
+            },
+        )
         .style(move |s| {
             let config = config.get();
             s.height_full()
@@ -1005,48 +1001,44 @@ fn editor_tab_header(
                 .hover(|s| s.background(config.color(LapceColor::HOVER_BACKGROUND)))
         })
         .debug_name("Tab and Active Indicator")
-        .on_event_stop(EventListener::DragOver, move |event| {
+        .on_event_stop(EventListener::DragTargetEnter, move |_, event| {
             if dragging.with_untracked(|dragging| dragging.is_some()) {
-                if let Event::PointerMove(pointer_event) = event {
-                    let new_left = pointer_event.pos.x
-                        < header_content_size.get_untracked().width / 2.0;
-                    if drag_over_left.get_untracked() != Some(new_left) {
-                        drag_over_left.set(Some(new_left));
-                    }
+                let new_left = event.current_state.position.x
+                    < header_content_size.get_untracked().width / 2.0;
+                if drag_over_left.get_untracked() != Some(new_left) {
+                    drag_over_left.set(Some(new_left));
                 }
             }
         })
-        .on_event(EventListener::Drop, move |event| {
+        .on_event(EventListener::DragTargetDrop, move |_, event| {
             if let Some((from_index, from_editor_tab_id)) = dragging.get_untracked()
             {
                 drag_over_left.set(None);
-                if let Event::PointerUp(pointer_event) = event {
-                    let left = pointer_event.pos.x
-                        < header_content_size.get_untracked().width / 2.0;
-                    let index = i.get_untracked();
-                    let new_index = if left { index } else { index + 1 };
-                    main_split.move_editor_tab_child(
-                        from_editor_tab_id,
-                        editor_tab_id,
-                        from_index.get_untracked(),
-                        new_index,
-                    );
-                }
+                let left = event.current_state.position.x
+                    < header_content_size.get_untracked().width / 2.0;
+                let index = i.get_untracked();
+                let new_index = if left { index } else { index + 1 };
+                main_split.move_editor_tab_child(
+                    from_editor_tab_id,
+                    editor_tab_id,
+                    from_index.get_untracked(),
+                    new_index,
+                );
                 EventPropagation::Stop
             } else {
                 EventPropagation::Continue
             }
         })
-        .on_event_stop(EventListener::DragLeave, move |_| {
+        .on_event_stop(EventListener::DragTargetLeave, move |_, _| {
             drag_over_left.set(None);
         })
     };
 
-    let content_size = create_rw_signal(Size::ZERO);
-    let scroll_offset = create_rw_signal(Rect::ZERO);
+    let content_size = RwSignal::new(Size::ZERO);
+    let scroll_offset = RwSignal::new(Vec2::ZERO);
     stack((
         stack({
-            let size = create_rw_signal(Size::ZERO);
+            let size = RwSignal::new(Size::ZERO);
             (
                 clip(empty().style(move |s| {
                     let config = config.get();
@@ -1064,7 +1056,7 @@ fn editor_tab_header(
                     s.absolute()
                         .width(size.get().width as f32 + 30.0)
                         .height_full()
-                        .apply_if(scroll_offset.x0 == 0.0, |s| s.hide())
+                        .apply_if(scroll_offset.x == 0.0, |s| s.hide())
                 }),
                 stack((
                     clickable_icon(
@@ -1092,28 +1084,34 @@ fn editor_tab_header(
                     )
                     .style(|s| s.margin_right(6.0)),
                 ))
-                .on_resize(move |rect| {
-                    size.set(rect.size());
-                })
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_, LayoutChanged { new_box, .. }| {
+                        size.set(new_box.size());
+                    },
+                )
                 .debug_name("Next/Previoius Tab Buttons")
                 .style(move |s| s.items_center()),
             )
         })
         .style(|s| s.flex_shrink(0f32)),
         container(
-            scroll({
+            Scroll::new({
                 dyn_stack(items, key, view_fn)
-                    .on_resize(move |rect| {
-                        let size = rect.size();
-                        if content_size.get_untracked() != size {
-                            content_size.set(size);
-                        }
-                    })
+                    .on_event_stop(
+                        LayoutChanged::listener(),
+                        move |_, LayoutChanged { new_box, .. }| {
+                            let size = new_box.size();
+                            if content_size.get_untracked() != size {
+                                content_size.set(size);
+                            }
+                        },
+                    )
                     .debug_name("Horizontal Tab Stack")
                     .style(|s| s.height_full().items_center())
             })
-            .on_scroll(move |rect| {
-                scroll_offset.set(rect);
+            .on_event_stop(ScrollChanged::listener(), move |_, state| {
+                scroll_offset.set(state.offset);
             })
             .ensure_visible(move || {
                 let active = editor_tab_active.get();
@@ -1121,7 +1119,7 @@ fn editor_tab_header(
                     .with_untracked(|editor_tab| editor_tab.children[active].1)
                     .get_untracked()
             })
-            .scroll_style(|s| s.hide_bars(true))
+            .custom_style(|s| s.hide_bars(true))
             .style(|s| {
                 s.set(VerticalScrollAsHorizontal, true)
                     .absolute()
@@ -1136,7 +1134,7 @@ fn editor_tab_header(
         })
         .debug_name("Tab scroll"),
         stack({
-            let size = create_rw_signal(Size::ZERO);
+            let size = RwSignal::new(Size::ZERO);
             (
                 clip({
                     empty().style(move |s| {
@@ -1159,7 +1157,7 @@ fn editor_tab_header(
                         .margin_left(-30.0)
                         .width(size.get().width as f32 + 30.0)
                         .height_full()
-                        .apply_if(scroll_offset.x1 >= content_size.width, |s| {
+                        .apply_if(scroll_offset.x >= content_size.width, |s| {
                             s.hide()
                         })
                 }),
@@ -1196,9 +1194,12 @@ fn editor_tab_header(
                     )
                     .style(|s| s.margin_horiz(6.0)),
                 ))
-                .on_resize(move |rect| {
-                    size.set(rect.size());
-                })
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_, LayoutChanged { new_box, .. }| {
+                        size.set(new_box.size());
+                    },
+                )
                 .style(|s| s.items_center().height_full()),
             )
         })
@@ -1209,7 +1210,7 @@ fn editor_tab_header(
             s.height_full()
                 .flex_shrink(0f32)
                 .margin_left(PxPctAuto::Auto)
-                .apply_if(scroll_offset.x1 < content_size.width, |s| {
+                .apply_if(scroll_offset.x < content_size.width, |s| {
                     s.margin_left(0.)
                 })
         }),
@@ -1277,7 +1278,7 @@ fn editor_tab_content(
                             false
                         }
                     };
-                    let editor_data = create_rw_signal(editor_data);
+                    let editor_data = RwSignal::new(editor_data);
                     editor_container_view(
                         window_tab_data.clone(),
                         workspace.clone(),
@@ -1323,24 +1324,22 @@ fn editor_tab_content(
                     let left_scroll_to = diff_editor_data.left.scroll_to();
                     let right_viewport = diff_editor_data.right.viewport();
                     let right_scroll_to = diff_editor_data.right.scroll_to();
-                    create_effect(move |_| {
+                    Effect::new(move |_| {
                         let left_viewport = left_viewport.get();
                         if right_viewport.get_untracked() != left_viewport {
                             right_scroll_to
                                 .set(Some(left_viewport.origin().to_vec2()));
                         }
                     });
-                    create_effect(move |_| {
+                    Effect::new(move |_| {
                         let right_viewport = right_viewport.get();
                         if left_viewport.get_untracked() != right_viewport {
                             left_scroll_to
                                 .set(Some(right_viewport.origin().to_vec2()));
                         }
                     });
-                    let left_editor =
-                        create_rw_signal(diff_editor_data.left.clone());
-                    let right_editor =
-                        create_rw_signal(diff_editor_data.right.clone());
+                    let left_editor = RwSignal::new(diff_editor_data.left.clone());
+                    let right_editor = RwSignal::new(diff_editor_data.right.clone());
                     stack((
                         container(
                             editor_container_view(
@@ -1358,7 +1357,7 @@ fn editor_tab_content(
                             )
                             .debug_name("Left Editor"),
                         )
-                        .on_event_cont(EventListener::PointerDown, move |_| {
+                        .on_event_cont(EventListener::PointerDown, move |_, _| {
                             focus_right.set(false);
                         })
                         .style(move |s| {
@@ -1386,7 +1385,7 @@ fn editor_tab_content(
                             )
                             .debug_name("Right Editor"),
                         )
-                        .on_event_cont(EventListener::PointerDown, move |_| {
+                        .on_event_cont(EventListener::PointerDown, move |_, _| {
                             focus_right.set(true);
                         })
                         .style(|s| {
@@ -1419,7 +1418,7 @@ fn editor_tab_content(
         };
         child.style(|s| s.size_full())
     };
-    let active = move || editor_tab.with(|t| t.active);
+    let active = move || editor_tab.with(|t| Some(t.active));
 
     tab(active, items, key, view_fn)
         .style(|s| s.size_full())
@@ -1450,8 +1449,8 @@ fn editor_tab(
     let config = common.config;
     let focus = common.focus;
     let internal_command = main_split.common.internal_command;
-    let tab_size = create_rw_signal(Size::ZERO);
-    let drag_over: RwSignal<Option<DragOverPosition>> = create_rw_signal(None);
+    let tab_size = RwSignal::new(Size::ZERO);
+    let drag_over: RwSignal<Option<DragOverPosition>> = RwSignal::new(None);
     stack((
         editor_tab_header(
             window_tab_data.clone(),
@@ -1523,32 +1522,30 @@ fn editor_tab(
                 })
                 .debug_name("Drag Over Handle"),
             empty()
-                .on_event_stop(EventListener::DragOver, move |event| {
+                .on_event_stop(EventListener::DragTargetEnter, move |_, event| {
                     if dragging.with_untracked(|dragging| dragging.is_some()) {
-                        if let Event::PointerMove(pointer_event) = event {
-                            let size = tab_size.get_untracked();
-                            let pos = pointer_event.pos;
-                            let new_drag_over = if pos.x < size.width / 4.0 {
-                                DragOverPosition::Left
-                            } else if pos.x > size.width * 3.0 / 4.0 {
-                                DragOverPosition::Right
-                            } else if pos.y < size.height / 4.0 {
-                                DragOverPosition::Top
-                            } else if pos.y > size.height * 3.0 / 4.0 {
-                                DragOverPosition::Bottom
-                            } else {
-                                DragOverPosition::Middle
-                            };
-                            if drag_over.get_untracked() != Some(new_drag_over) {
-                                drag_over.set(Some(new_drag_over));
-                            }
+                        let size = tab_size.get_untracked();
+                        let pos = event.current_state.position;
+                        let new_drag_over = if pos.x < size.width / 4.0 {
+                            DragOverPosition::Left
+                        } else if pos.x > size.width * 3.0 / 4.0 {
+                            DragOverPosition::Right
+                        } else if pos.y < size.height / 4.0 {
+                            DragOverPosition::Top
+                        } else if pos.y > size.height * 3.0 / 4.0 {
+                            DragOverPosition::Bottom
+                        } else {
+                            DragOverPosition::Middle
+                        };
+                        if drag_over.get_untracked() != Some(new_drag_over) {
+                            drag_over.set(Some(new_drag_over));
                         }
                     }
                 })
-                .on_event_stop(EventListener::DragLeave, move |_| {
+                .on_event_stop(EventListener::DragTargetLeave, move |_, _| {
                     drag_over.set(None);
                 })
-                .on_event(EventListener::Drop, move |_| {
+                .on_event(EventListener::DragTargetDrop, move |_, _| {
                     if let Some((from_index, from_editor_tab_id)) =
                         dragging.get_untracked()
                     {
@@ -1604,9 +1601,12 @@ fn editor_tab(
                         EventPropagation::Continue
                     }
                 })
-                .on_resize(move |rect| {
-                    tab_size.set(rect.size());
-                })
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_, LayoutChanged { new_box, .. }| {
+                        tab_size.set(new_box.size());
+                    },
+                )
                 .style(move |s| {
                     s.absolute()
                         .size_full()
@@ -1618,7 +1618,7 @@ fn editor_tab(
         .debug_name("Editor Content and Drag Over")
         .style(|s| s.size_full()),
     ))
-    .on_event_cont(EventListener::PointerDown, move |_| {
+    .on_event_cont(EventListener::PointerDown, move |_, _| {
         if focus.get_untracked() != Focus::Workbench {
             focus.set(Focus::Workbench);
         }
@@ -1640,8 +1640,8 @@ fn editor_tab(
 }
 
 fn split_resize_border(
-    splits: ReadSignal<im::HashMap<SplitId, RwSignal<SplitData>>>,
-    editor_tabs: ReadSignal<im::HashMap<EditorTabId, RwSignal<EditorTabData>>>,
+    splits: ReadSignal<imbl::HashMap<SplitId, RwSignal<SplitData>>>,
+    editor_tabs: ReadSignal<imbl::HashMap<EditorTabId, RwSignal<EditorTabData>>>,
     split: ReadSignal<SplitData>,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
@@ -1705,77 +1705,78 @@ fn split_resize_border(
         },
         |(index, (_, content))| (*index, content.id()),
         move |(index, (_, content))| {
-            let drag_start: RwSignal<Option<Point>> = create_rw_signal(None);
+            let drag_start: RwSignal<Option<_>> = create_rw_signal(None);
             let view = empty();
             let view_id = view.id();
-            view.on_event_stop(EventListener::PointerDown, move |event| {
-                view_id.request_active();
-                if let Event::PointerDown(pointer_event) = event {
-                    drag_start.set(Some(pointer_event.pos));
-                }
-            })
-            .on_event_stop(EventListener::PointerUp, move |_| {
+            view.on_event_stop(
+                EventListener::PointerDown,
+                move |cx,
+                      PointerButtonEvent {
+                          button,
+                          pointer,
+                          state,
+                      }| {
+                    if let Some(pointer_id) = pointer.pointer_id {
+                        cx.request_pointer_capture(pointer_id);
+                    }
+                    drag_start.set(Some(state.logical_position()));
+                },
+            )
+            .on_event_stop(EventListener::PointerUp, move |_, _| {
                 drag_start.set(None);
             })
-            .on_event_stop(EventListener::PointerMove, move |event| {
-                if let Event::PointerMove(pointer_event) = event {
-                    if let Some(drag_start_point) = drag_start.get_untracked() {
-                        let rects = split.with_untracked(|split| {
-                            split
-                                .children
-                                .iter()
-                                .map(|(_, c)| content_rect(c, false))
-                                .collect::<Vec<Rect>>()
-                        });
-                        let direction = direction(false);
-                        match direction {
-                            SplitDirection::Vertical => {
-                                let left = rects[index - 1].width();
-                                let right = rects[index].width();
-                                let shift = pointer_event.pos.x - drag_start_point.x;
-                                let left = left + shift;
-                                let right = right - shift;
-                                let total_width =
-                                    rects.iter().map(|r| r.width()).sum::<f64>();
-                                split.with_untracked(|split| {
-                                    for (i, (size, _)) in
-                                        split.children.iter().enumerate()
-                                    {
-                                        if i == index - 1 {
-                                            size.set(left / total_width);
-                                        } else if i == index {
-                                            size.set(right / total_width);
-                                        } else {
-                                            size.set(rects[i].width() / total_width);
-                                        }
-                                    }
-                                })
+            .on_event_stop(EventListener::PointerMove, move |_, pointer_update| {
+                let Some(drag_start_position) = drag_start.get_untracked() else {
+                    return;
+                };
+                let pointer_position = pointer_update.current.logical_position();
+                let rects = split.with_untracked(|split| {
+                    split
+                        .children
+                        .iter()
+                        .map(|(_, c)| content_rect(c, false))
+                        .collect::<Vec<Rect>>()
+                });
+                match direction(false) {
+                    SplitDirection::Vertical => {
+                        let left = rects[index - 1].width();
+                        let right = rects[index].width();
+                        let shift = pointer_position.x - drag_start_position.x;
+                        let left = left + shift;
+                        let right = right - shift;
+                        let total_width =
+                            rects.iter().map(|r| r.width()).sum::<f64>();
+                        split.with_untracked(|split| {
+                            for (i, (size, _)) in split.children.iter().enumerate() {
+                                if i == index - 1 {
+                                    size.set(left / total_width);
+                                } else if i == index {
+                                    size.set(right / total_width);
+                                } else {
+                                    size.set(rects[i].width() / total_width);
+                                }
                             }
-                            SplitDirection::Horizontal => {
-                                let up = rects[index - 1].height();
-                                let down = rects[index].height();
-                                let shift = pointer_event.pos.y - drag_start_point.y;
-                                let up = up + shift;
-                                let down = down - shift;
-                                let total_height =
-                                    rects.iter().map(|r| r.height()).sum::<f64>();
-                                split.with_untracked(|split| {
-                                    for (i, (size, _)) in
-                                        split.children.iter().enumerate()
-                                    {
-                                        if i == index - 1 {
-                                            size.set(up / total_height);
-                                        } else if i == index {
-                                            size.set(down / total_height);
-                                        } else {
-                                            size.set(
-                                                rects[i].height() / total_height,
-                                            );
-                                        }
-                                    }
-                                })
+                        })
+                    }
+                    SplitDirection::Horizontal => {
+                        let up = rects[index - 1].height();
+                        let down = rects[index].height();
+                        let shift = pointer_position.y - drag_start_position.y;
+                        let up = up + shift;
+                        let down = down - shift;
+                        let total_height =
+                            rects.iter().map(|r| r.height()).sum::<f64>();
+                        split.with_untracked(|split| {
+                            for (i, (size, _)) in split.children.iter().enumerate() {
+                                if i == index - 1 {
+                                    size.set(up / total_height);
+                                } else if i == index {
+                                    size.set(down / total_height);
+                                } else {
+                                    size.set(rects[i].height() / total_height);
+                                }
                             }
-                        }
+                        })
                     }
                 }
             })
@@ -1829,8 +1830,8 @@ fn split_resize_border(
 }
 
 fn split_border(
-    splits: ReadSignal<im::HashMap<SplitId, RwSignal<SplitData>>>,
-    editor_tabs: ReadSignal<im::HashMap<EditorTabId, RwSignal<EditorTabData>>>,
+    splits: ReadSignal<imbl::HashMap<SplitId, RwSignal<SplitData>>>,
+    editor_tabs: ReadSignal<imbl::HashMap<EditorTabId, RwSignal<EditorTabData>>>,
     split: ReadSignal<SplitData>,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
@@ -1892,7 +1893,7 @@ fn split_border(
                         SplitDirection::Vertical => FlexDirection::Row,
                         SplitDirection::Horizontal => FlexDirection::Column,
                     })
-                    .justify_content(Some(JustifyContent::Center))
+                    .justify_content(JustifyContent::Center)
             })
         },
     )
@@ -1966,42 +1967,33 @@ fn split_list(
             let local_main_split = main_split.clone();
             let local_local_main_split = main_split.clone();
             child
-                .on_resize(move |rect| match &content {
-                    SplitContent::EditorTab(editor_tab_id) => {
-                        local_main_split.editor_tab_update_layout(
-                            editor_tab_id,
-                            None,
-                            Some(rect),
-                        );
-                    }
-                    SplitContent::Split(split_id) => {
-                        let split_data =
-                            splits.with(|splits| splits.get(split_id).cloned());
-                        if let Some(split_data) = split_data {
-                            split_data.update(|split| {
-                                split.layout_rect = rect;
-                            });
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_,
+                          LayoutChanged {
+                              new_box,
+                              new_window_origin,
+                              ..
+                          }| match &content {
+                        SplitContent::EditorTab(editor_tab_id) => {
+                            local_main_split.editor_tab_update_layout(
+                                editor_tab_id,
+                                Some(*new_window_origin),
+                                Some(*new_box),
+                            );
                         }
-                    }
-                })
-                .on_move(move |point| match &content {
-                    SplitContent::EditorTab(editor_tab_id) => {
-                        local_local_main_split.editor_tab_update_layout(
-                            editor_tab_id,
-                            Some(point),
-                            None,
-                        );
-                    }
-                    SplitContent::Split(split_id) => {
-                        let split_data =
-                            splits.with(|splits| splits.get(split_id).cloned());
-                        if let Some(split_data) = split_data {
-                            split_data.update(|split| {
-                                split.window_origin = point;
-                            });
+                        SplitContent::Split(split_id) => {
+                            let split_data =
+                                splits.with(|splits| splits.get(split_id).cloned());
+                            if let Some(split_data) = split_data {
+                                split_data.update(|split| {
+                                    split.layout_rect = *new_box;
+                                    split.window_origin = *new_window_origin
+                                });
+                            }
                         }
-                    }
-                })
+                    },
+                )
                 .style(move |s| s.flex_grow(split_size.get() as f32).flex_basis(0.0))
         }
     };
@@ -2204,23 +2196,29 @@ fn workbench(window_tab_data: Rc<WindowTabData>) -> impl View {
                     PanelContainerPosition::Bottom,
                 ),
             ))
-            .on_resize(move |rect| {
-                let width = rect.size().width;
-                if main_split_width.get_untracked() != width {
-                    main_split_width.set(width);
-                }
-            })
+            .on_event_stop(
+                LayoutChanged::listener(),
+                move |_, LayoutChanged { new_box, .. }| {
+                    let width = new_box.size().width;
+                    if main_split_width.get_untracked() != width {
+                        main_split_width.set(width);
+                    }
+                },
+            )
             .style(|s| s.flex_col().flex_grow(1.0f32))
         },
         panel_container_view(window_tab_data.clone(), PanelContainerPosition::Right),
         window_message_view(window_tab_data.messages, window_tab_data.common.config),
     ))
-    .on_resize(move |rect| {
-        let size = rect.size();
-        if size != workbench_size.get_untracked() {
-            workbench_size.set(size);
-        }
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            let size = new_box.size();
+            if size != workbench_size.get_untracked() {
+                workbench_size.set(size);
+            }
+        },
+    )
     .style(move |s| s.size_full())
     .debug_name("Workbench")
 }
@@ -2303,7 +2301,7 @@ fn palette_item(
                             .flex_basis(0.0)
                     }),
                 ))
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
         PaletteItemContent::DocumentSymbol {
@@ -2370,7 +2368,7 @@ fn palette_item(
                             .flex_basis(0.0)
                     }),
                 ))
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
         PaletteItemContent::WorkspaceSymbol {
@@ -2447,7 +2445,7 @@ fn palette_item(
                             .flex_basis(0.0)
                     }),
                 ))
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
         PaletteItemContent::RunAndDebug {
@@ -2516,7 +2514,7 @@ fn palette_item(
                             .flex_basis(0.0)
                     }),
                 ))
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
         PaletteItemContent::PaletteHelp { .. }
@@ -2543,7 +2541,7 @@ fn palette_item(
                     .style(|s| {
                         s.flex_row()
                             .flex_grow(1.0f32)
-                            .align_items(Some(AlignItems::Center))
+                            .align_items(AlignItems::Center)
                     }),
                     stack((dyn_stack(
                         move || keys.clone(),
@@ -2583,7 +2581,7 @@ fn palette_item(
                     move || indices.clone(),
                     move || config.get().color(LapceColor::EDITOR_FOCUS),
                 )
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
         PaletteItemContent::FileChooserEntry { is_dir, .. } => {
@@ -2616,7 +2614,7 @@ fn palette_item(
                     )
                     .style(|s| s.margin_right(6.0).max_width_full()),
                 ))
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
         PaletteItemContent::ConfirmFileChooserEntry { .. } => {
@@ -2646,7 +2644,7 @@ fn palette_item(
                     )
                     .style(|s| s.margin_right(6.0).max_width_full()),
                 ))
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
         #[cfg(windows)]
@@ -2659,7 +2657,7 @@ fn palette_item(
                     move || indices.clone(),
                     move || config.get().color(LapceColor::EDITOR_FOCUS),
                 )
-                .style(|s| s.align_items(Some(AlignItems::Center)).max_width_full()),
+                .style(|s| s.align_items(AlignItems::Center).max_width_full()),
             )
         }
     }
@@ -2699,27 +2697,24 @@ fn palette_input(window_tab_data: Rc<WindowTabData>) -> impl View {
     .style(|s| s.padding_bottom(5.0))
 }
 
-struct PaletteItems(im::Vector<PaletteItem>);
+// struct PaletteItems(imbl::Vector<PaletteItem>);
 
-impl VirtualVector<(usize, PaletteItem)> for PaletteItems {
-    fn total_len(&self) -> usize {
-        self.0.len()
-    }
+// impl VirtualVector<(usize, PaletteItem)> for PaletteItems {
+//     fn total_len(&self) -> usize {
+//         self.0.len()
+//     }
 
-    fn slice(
-        &mut self,
-        range: Range<usize>,
-    ) -> impl Iterator<Item = (usize, PaletteItem)> {
-        let start = range.start;
-        Box::new(
-            self.0
-                .slice(range)
-                .into_iter()
-                .enumerate()
-                .map(move |(i, item)| (i + start, item)),
-        )
-    }
-}
+//     fn slice(
+//         &self,
+//         range: Range<usize>,
+//     ) -> impl Iterator<Item = (usize, PaletteItem)> {
+//         let start = range.start;
+//         imbl::Vector::slice(&mut self.0.clone(), range)
+//             .into_iter()
+//             .enumerate()
+//             .map(move |(i, item)| (i + start, item))
+//     }
+// }
 
 fn palette_content(
     window_tab_data: Rc<WindowTabData>,
@@ -2739,10 +2734,10 @@ fn palette_content(
     let palette_item_height = 25.0;
     let workspace = window_tab_data.workspace.clone();
     stack((
-        scroll({
+        Scroll::new({
             let workspace = workspace.clone();
             virtual_stack(
-                move || PaletteItems(items.get()),
+                move || VectorItems(items.get()),
                 move |(i, _item)| {
                     (run_id.get_untracked(), *i, input.get_untracked().input)
                 },
@@ -2809,7 +2804,7 @@ fn palette_content(
                 Display::None
             })
             .padding_horiz(10.0)
-            .align_items(Some(AlignItems::Center))
+            .align_items(AlignItems::Center)
             .height(palette_item_height as f32)
         }),
     ))
@@ -2868,7 +2863,7 @@ fn palette(window_tab_data: Rc<WindowTabData>) -> impl View {
             palette_content(window_tab_data.clone(), layout_rect),
             palette_preview(window_tab_data.clone()),
         ))
-        .on_event_stop(EventListener::PointerDown, move |_| {})
+        .on_event_stop(EventListener::PointerDown, move |_, _| {})
         .style(move |s| {
             let config = config.get();
             s.width(config.ui.palette_width() as f64)
@@ -2937,7 +2932,9 @@ fn window_message_view(
                 }),
                 stack((
                     text(title.clone()).style(|s| {
-                        s.min_width(0.0).line_height(1.8).font_weight(Weight::BOLD)
+                        s.min_width(0.0)
+                            .line_height(1.8)
+                            .font_weight(FontWeight::BOLD)
                     }),
                     text(message.message.clone()).style(|s| {
                         s.min_width(0.0).line_height(1.8).margin_top(5.0)
@@ -2977,7 +2974,7 @@ fn window_message_view(
                     }
                 }
             })
-            .on_event_stop(EventListener::PointerDown, |_| {})
+            .on_event_stop(EventListener::PointerDown, |_, _| {})
             .style(move |s| {
                 let config = config.get();
                 s.width_full()
@@ -2995,7 +2992,7 @@ fn window_message_view(
     container(
         container(
             container(
-                scroll(
+                Scroll::new(
                     dyn_stack(
                         move || messages.get().into_iter().enumerate(),
                         move |_| {
@@ -3027,17 +3024,16 @@ fn window_message_view(
     .debug_name("Window Message View")
 }
 
-struct VectorItems<V>(im::Vector<V>);
+struct VectorItems<V>(imbl::Vector<V>);
 
 impl<V: Clone + 'static> VirtualVector<(usize, V)> for VectorItems<V> {
     fn total_len(&self) -> usize {
         self.0.len()
     }
 
-    fn slice(&mut self, range: Range<usize>) -> impl Iterator<Item = (usize, V)> {
+    fn slice(&self, range: Range<usize>) -> impl Iterator<Item = (usize, V)> {
         let start = range.start;
-        self.0
-            .slice(range)
+        imbl::Vector::slice(&mut self.0.clone(), range)
             .into_iter()
             .enumerate()
             .map(move |(i, item)| (i + start, item))
@@ -3070,14 +3066,31 @@ fn hover(window_tab_data: Rc<WindowTabData>) -> impl View {
     let id = AtomicU64::new(0);
     let layout_rect = window_tab_data.common.hover.layout_rect;
 
-    scroll(
+    let markdown_attrs = {
+        let config = config.clone();
+        move || {
+            AttrsList::new(
+                Attrs::new()
+                    .font_size(config.get().ui.font_size() as f32)
+                    .line_height(floem::unit::LineHeightValue::Normal(1.8)),
+            )
+        }
+    };
+
+    Scroll::new(
         dyn_stack(
             move || hover_data.content.get(),
             move |_| id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             move |content| match content {
                 MarkdownContent::Text(text_layout) => container(
-                    rich_text(move || text_layout.clone())
-                        .style(|s| s.max_width(600.0)),
+                    // TODO: Markdown rendering needs to be reworked
+                    {
+                        let text = text_layout.text().to_string();
+                        rich_text(text.clone(), markdown_attrs(), move || {
+                            (text.clone(), markdown_attrs())
+                        })
+                    }
+                    .style(|s| s.max_width(600.0)),
                 )
                 .style(|s| s.max_width_full()),
                 MarkdownContent::Image { .. } => container(empty()),
@@ -3091,11 +3104,14 @@ fn hover(window_tab_data: Rc<WindowTabData>) -> impl View {
         )
         .style(|s| s.flex_col().padding_horiz(10.0).padding_vert(5.0)),
     )
-    .on_resize(move |rect| {
-        layout_rect.set(rect);
-    })
-    .on_event_stop(EventListener::PointerMove, |_| {})
-    .on_event_stop(EventListener::PointerDown, |_| {})
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            layout_rect.set(*new_box);
+        },
+    )
+    .on_event_stop(EventListener::PointerMove, |_, _| {})
+    .on_event_stop(EventListener::PointerDown, |_, _| {})
     .style(move |s| {
         let active = window_tab_data.common.hover.active.get();
         if !active {
@@ -3127,7 +3143,7 @@ fn completion(window_tab_data: Rc<WindowTabData>) -> impl View {
     let active = completion_data.with_untracked(|c| c.active);
     let request_id =
         move || completion_data.with_untracked(|c| (c.request_id, c.input_id));
-    scroll(
+    Scroll::new(
         virtual_stack(
             move || completion_data.with(|c| VectorItems(c.filtered_items.clone())),
             move |(i, _item)| (request_id(), *i),
@@ -3138,8 +3154,7 @@ fn completion(window_tab_data: Rc<WindowTabData>) -> impl View {
                             item.item.kind.map(completion_kind_to_str).unwrap_or(""),
                         )
                         .style(move |s| {
-                            s.width_full()
-                                .justify_content(Some(JustifyContent::Center))
+                            s.width_full().justify_content(JustifyContent::Center)
                         }),
                     )
                     .style(move |s| {
@@ -3148,8 +3163,8 @@ fn completion(window_tab_data: Rc<WindowTabData>) -> impl View {
                         s.width(width)
                             .min_width(width)
                             .height_full()
-                            .align_items(Some(AlignItems::Center))
-                            .font_weight(Weight::BOLD)
+                            .align_items(AlignItems::Center)
+                            .font_weight(FontWeight::BOLD)
                             .apply_opt(
                                 config.completion_color(item.item.kind),
                                 |s, c| s.color(c).background(c.multiply_alpha(0.3)),
@@ -3175,12 +3190,12 @@ fn completion(window_tab_data: Rc<WindowTabData>) -> impl View {
                             editor.select_completion();
                         }
                     })
-                    .on_event_stop(EventListener::PointerDown, |_| {})
+                    .on_event_stop(EventListener::PointerDown, |_, _| {})
                     .style(move |s| {
                         let config = config.get();
                         s.padding_horiz(5.0)
                             .min_width(0.0)
-                            .align_items(Some(AlignItems::Center))
+                            .align_items(AlignItems::Center)
                             .size_full()
                             .cursor(CursorStyle::Pointer)
                             .apply_if(active.get() == i, |s| {
@@ -3197,18 +3212,14 @@ fn completion(window_tab_data: Rc<WindowTabData>) -> impl View {
                     }),
                 ))
                 .style(move |s| {
-                    s.align_items(Some(AlignItems::Center))
+                    s.align_items(AlignItems::Center)
                         .width_full()
                         .height(config.get().editor.line_height() as f32)
                 })
             },
         )
         .item_size_fixed(move || config.get().editor.line_height() as f64)
-        .style(|s| {
-            s.align_items(Some(AlignItems::Center))
-                .width_full()
-                .flex_col()
-        }),
+        .style(|s| s.align_items(AlignItems::Center).width_full().flex_col()),
     )
     .ensure_visible(move || {
         let config = config.get();
@@ -3220,12 +3231,15 @@ fn completion(window_tab_data: Rc<WindowTabData>) -> impl View {
                 active as f64 * config.editor.line_height() as f64,
             ))
     })
-    .on_resize(move |rect| {
-        completion_data.update(|c| {
-            c.layout_rect = rect;
-        });
-    })
-    .on_event_stop(EventListener::PointerMove, |_| {})
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            completion_data.update(|c| {
+                c.layout_rect = *new_box;
+            });
+        },
+    )
+    .on_event_stop(EventListener::PointerMove, |_, _| {})
     .style(move |s| {
         let config = config.get();
         let origin = window_tab_data.completion_origin();
@@ -3249,7 +3263,7 @@ fn code_action(window_tab_data: Rc<WindowTabData>) -> impl View {
         .with_untracked(|code_action| (code_action.status, code_action.active));
     let request_id =
         move || code_action.with_untracked(|code_action| code_action.request_id);
-    scroll(
+    Scroll::new(
         container(
             dyn_stack(
                 move || {
@@ -3268,11 +3282,11 @@ fn code_action(window_tab_data: Rc<WindowTabData>) -> impl View {
                         code_action.active.set(i);
                         code_action.select();
                     })
-                    .on_event_stop(EventListener::PointerDown, |_| {})
+                    .on_event_stop(EventListener::PointerDown, |_, _| {})
                     .style(move |s| {
                         let config = config.get();
                         s.padding_horiz(10.0)
-                            .align_items(Some(AlignItems::Center))
+                            .align_items(AlignItems::Center)
                             .min_width(0.0)
                             .width_full()
                             .line_height(1.8)
@@ -3306,12 +3320,15 @@ fn code_action(window_tab_data: Rc<WindowTabData>) -> impl View {
                 active as f64 * config.editor.line_height() as f64,
             ))
     })
-    .on_resize(move |rect| {
-        code_action.update(|c| {
-            c.layout_rect = rect;
-        });
-    })
-    .on_event_stop(EventListener::PointerMove, |_| {})
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            code_action.update(|c| {
+                c.layout_rect = *new_box;
+            });
+        },
+    )
+    .on_event_stop(EventListener::PointerMove, |_, _| {})
     .style(move |s| {
         let origin = window_tab_data.code_action_origin();
         s.display(match status.get() {
@@ -3352,11 +3369,14 @@ fn rename(window_tab_data: Rc<WindowTabData>) -> impl View {
                 .background(config.color(LapceColor::EDITOR_BACKGROUND))
         }),
     )
-    .on_resize(move |rect| {
-        layout_rect.set(rect);
-    })
-    .on_event_stop(EventListener::PointerMove, |_| {})
-    .on_event_stop(EventListener::PointerDown, |_| {})
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            layout_rect.set(*new_box);
+        },
+    )
+    .on_event_stop(EventListener::PointerMove, |_, _| {})
+    .on_event_stop(EventListener::PointerDown, |_, _| {})
     .style(move |s| {
         let origin = window_tab_data.rename_origin();
         s.position(Position::Absolute)
@@ -3392,12 +3412,18 @@ fn window_tab(window_tab_data: Rc<WindowTabData>) -> impl View {
                 config,
             ),
         ))
-        .on_resize(move |rect| {
-            layout_rect.set(rect);
-        })
-        .on_move(move |point| {
-            window_origin.set(point);
-        })
+        .on_event_stop(
+            LayoutChanged::listener(),
+            move |_,
+                  LayoutChanged {
+                      new_box,
+                      new_window_origin,
+                      ..
+                  }| {
+                layout_rect.set(*new_box);
+                window_origin.set(*new_window_origin);
+            },
+        )
         .style(|s| s.size_full().flex_col())
         .debug_name("Base Layer"),
         completion(window_tab_data.clone()),
@@ -3411,7 +3437,7 @@ fn window_tab(window_tab_data: Rc<WindowTabData>) -> impl View {
     .on_cleanup(move || {
         window_tab_scope.dispose();
     })
-    .on_event_cont(EventListener::PointerMove, move |_| {
+    .on_event_cont(EventListener::PointerMove, move |_, _| {
         if hover_active.get_untracked() {
             hover_active.set(false);
         }
@@ -3459,7 +3485,7 @@ fn workspace_tab_header(window_data: WindowData) -> impl View {
     let num_window_tabs = window_data.num_window_tabs;
     let window_command = window_data.common.window_command;
 
-    let tab_width = create_memo(move |_| {
+    let tab_width = Memo::new(move |_| {
         let window_control_width = if !cfg!(target_os = "macos")
             && config.get_untracked().core.custom_titlebar
         {
@@ -3520,41 +3546,39 @@ fn workspace_tab_header(window_data: WindowData) -> impl View {
                             .style(|s| s.margin_horiz(6.0))
                         },
                     ))
-                    .on_event_stop(EventListener::DragOver, move |event| {
-                        if dragging_index.get_untracked().is_some() {
-                            if let Event::PointerMove(pointer_event) = event {
-                                let left = pointer_event.pos.x
+                    .on_event_stop(
+                        EventListener::DragTargetEnter,
+                        move |_, event| {
+                            if dragging_index.get_untracked().is_some() {
+                                let left = event.current_state.logical_position().x
                                     < tab_width.get_untracked() / 2.0;
                                 if drag_over_left.get_untracked() != Some(left) {
                                     drag_over_left.set(Some(left));
                                 }
                             }
-                        }
-                    })
-                    .on_event(EventListener::Drop, move |event| {
+                        },
+                    )
+                    .on_event(EventListener::DragTargetDrop, move |_, event| {
                         if dragging_index.get_untracked().is_some() {
                             drag_over_left.set(None);
-                            if let Event::PointerUp(pointer_event) = event {
-                                let left = pointer_event.pos.x
-                                    < tab_width.get_untracked() / 2.0;
-                                let index = index.get_untracked();
-                                let new_index = if left { index } else { index + 1 };
-                                if let Some(from_index) =
-                                    dragging_index.get_untracked()
-                                {
-                                    window_data.move_tab(
-                                        from_index.get_untracked(),
-                                        new_index,
-                                    );
-                                }
-                                dragging_index.set(None);
+
+                            let left = event.current_state.logical_position().x
+                                < tab_width.get_untracked() / 2.0;
+                            let index = index.get_untracked();
+                            let new_index = if left { index } else { index + 1 };
+                            if let Some(from_index) = dragging_index.get_untracked()
+                            {
+                                window_data
+                                    .move_tab(from_index.get_untracked(), new_index);
                             }
+                            dragging_index.set(None);
+
                             EventPropagation::Stop
                         } else {
                             EventPropagation::Continue
                         }
                     })
-                    .on_event_stop(EventListener::DragLeave, move |_| {
+                    .on_event_stop(EventListener::DragTargetLeave, move |_, _| {
                         drag_over_left.set(None);
                     })
                     .style(move |s| {
@@ -3590,10 +3614,10 @@ fn workspace_tab_header(window_data: WindowData) -> impl View {
                 .style(move |s| s.size_full().items_center())
             })
             .draggable()
-            .on_event_stop(EventListener::DragStart, move |_| {
+            .on_event_stop(EventListener::DragStart, move |_, _| {
                 dragging_index.set(Some(index));
             })
-            .on_event_stop(EventListener::DragEnd, move |_| {
+            .on_event_stop(EventListener::DragEnd, move |_, _| {
                 dragging_index.set(None);
             })
             .dragging_style(move |s| {
@@ -3675,12 +3699,15 @@ fn workspace_tab_header(window_data: WindowData) -> impl View {
             || "New Workspace Tab",
             config.read_only(),
         ))
-        .on_resize(move |rect| {
-            let current = add_icon_width.get_untracked();
-            if rect.width() != current {
-                add_icon_width.set(rect.width());
-            }
-        })
+        .on_event_stop(
+            LayoutChanged::listener(),
+            move |_, LayoutChanged { new_box, .. }| {
+                let current = add_icon_width.get_untracked();
+                if new_box.width() != current {
+                    add_icon_width.set(new_box.width());
+                }
+            },
+        )
         .style(|s| {
             s.height_full()
                 .padding_left(10.0)
@@ -3696,20 +3723,26 @@ fn workspace_tab_header(window_data: WindowData) -> impl View {
             window_maximized,
             config.read_only(),
         )
-        .on_resize(move |rect| {
-            let width = rect.width();
-            if window_control_width.get_untracked() != width {
-                window_control_width.set(width);
-            }
-        }),
+        .on_event_stop(
+            LayoutChanged::listener(),
+            move |_, LayoutChanged { new_box, .. }| {
+                let width = new_box.width();
+                if window_control_width.get_untracked() != width {
+                    window_control_width.set(width);
+                }
+            },
+        ),
     ))
-    .on_resize(move |rect| {
-        let current = available_width.get_untracked();
-        if rect.width() != current {
-            available_width.set(rect.width());
-        }
-        window_tab_header_height.set(rect.height());
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            let current = available_width.get_untracked();
+            if new_box.width() != current {
+                available_width.set(new_box.width());
+            }
+            window_tab_header_height.set(new_box.height());
+        },
+    )
     .style(move |s| {
         let config = config.get();
         s.border_bottom(1.0)
@@ -3735,16 +3768,21 @@ fn window(window_data: WindowData) -> impl View {
     let key = |(_, window_tab): &(RwSignal<usize>, Rc<WindowTabData>)| {
         window_tab.window_tab_id
     };
-    let active = move || active.get();
     let window_focus = create_rw_signal(false);
     let ime_enabled = window_data.ime_enabled;
     let window_maximized = window_data.common.window_maximized;
 
-    tab(active, items, key, |(_, window_tab_data)| {
-        window_tab(window_tab_data)
-    })
+    tab(
+        {
+            let active = active;
+            move || Some(active.get())
+        },
+        items,
+        key,
+        |(_, window_tab_data)| window_tab(window_tab_data),
+    )
     .window_title(move || {
-        let active = active();
+        let active = active.get();
         let window_tabs = window_tabs.get();
         let workspace = window_tabs
             .get(active)
@@ -3755,23 +3793,21 @@ fn window(window_data: WindowData) -> impl View {
             None => "Lapce".to_string(),
         }
     })
-    .on_event_stop(EventListener::ImeEnabled, move |_| {
+    .on_event_stop(EventListener::ImeEnabled, move |_, _| {
         ime_enabled.set(true);
     })
-    .on_event_stop(EventListener::ImeDisabled, move |_| {
+    .on_event_stop(EventListener::ImeDisabled, move |_, _| {
         ime_enabled.set(false);
     })
-    .on_event_cont(EventListener::WindowGotFocus, move |_| {
+    .on_event_cont(EventListener::WindowGainedFocus, move |_, _| {
         window_focus.set(true);
     })
-    .on_event_cont(EventListener::WindowMaximizeChanged, move |event| {
-        if let Event::WindowMaximizeChanged(maximized) = event {
-            window_maximized.set(*maximized);
-        }
+    .on_event_cont(EventListener::WindowMaximizeChanged, move |_, maximized| {
+        window_maximized.set(*maximized);
     })
     .window_menu(move || {
         window_focus.track();
-        let active = active();
+        let active = active.get();
         let window_tabs = window_tabs.get();
         let window_tab = window_tabs.get(active).or_else(|| window_tabs.last());
         if let Some((_, window_tab)) = window_tab {
@@ -3780,7 +3816,7 @@ fn window(window_data: WindowData) -> impl View {
             let lapce_command = window_tab.common.lapce_command;
             window_menu(lapce_command, workbench_command)
         } else {
-            Menu::new("Lapce")
+            Menu::new()
         }
     })
     .style(|s| s.size_full())
@@ -3904,12 +3940,9 @@ pub fn launch() {
             std::process::exit(1);
         }
     };
-    let scope = Scope::new();
-    provide_context(db.clone());
 
-    let window_scale = scope.create_rw_signal(1.0);
-    let latest_release = scope.create_rw_signal(Arc::new(None));
-    let app_command = Listener::new_empty(scope);
+    // TODO: Does it matter which scope?..
+    let app_command = Listener::new_empty(Scope::current());
 
     let plugin_paths = Arc::new(cli.plugin_path);
 
@@ -3938,32 +3971,30 @@ pub fn launch() {
         }
     }
 
-    let windows = scope.create_rw_signal(im::HashMap::new());
+    // let windows = scope.create_rw_signal(imbl::HashMap::new());
     let config = LapceConfig::load(&LapceWorkspace::default(), &[], &plugin_paths);
 
-    // Restore scale from config
-    window_scale.set(config.ui.scale());
-
-    let config = scope.create_rw_signal(Arc::new(config));
+    let config = RwSignal::new(Arc::new(config));
     let app_data = AppData {
-        windows,
-        active_window: scope.create_rw_signal(WindowId::from_raw(0)),
-        window_scale,
-        app_terminated: scope.create_rw_signal(false),
+        windows: Default::default(),
+        active_window: RwSignal::new(WindowId::from_raw(0)),
+        window_scale: RwSignal::new(config.get_untracked().ui.scale()),
+        app_terminated: Default::default(),
         watcher: Arc::new(watcher),
-        latest_release,
+        latest_release: Default::default(),
         app_command,
         tracing_handle: reload_handle,
         config,
         plugin_paths,
+        db: db.clone(),
     };
 
     let app = app_data.create_windows(db.clone(), cli.paths);
 
     {
         let app_data = app_data.clone();
-        let notification = create_signal_from_channel(rx);
-        create_effect(move |_| {
+        let notification = ChannelSignal::new(rx);
+        Effect::new(move |_| {
             if notification.get().is_some() {
                 tracing::debug!("notification reload_config");
                 app_data.reload_config();
@@ -3971,7 +4002,8 @@ pub fn launch() {
         });
     }
 
-    {
+    // TODO: This tries to access view ID before any windows are created, create_ext_action needs to have "current" view.
+    if false {
         let cx = Scope::new();
         let app_data = app_data.clone();
         let send = create_ext_action(cx, move |updated| {
@@ -4036,9 +4068,9 @@ pub fn launch() {
     #[cfg(feature = "updater")]
     {
         let (tx, rx) = sync_channel(1);
-        let notification = create_signal_from_channel(rx);
+        let notification = ChannelSignal::new(rx);
         let latest_release = app_data.latest_release;
-        create_effect(move |_| {
+        Effect::new(move |_| {
             if let Some(release) = notification.get() {
                 latest_release.set(Arc::new(Some(release)));
             }
@@ -4060,9 +4092,9 @@ pub fn launch() {
 
     {
         let (tx, rx) = sync_channel(1);
-        let notification = create_signal_from_channel(rx);
+        let notification = ChannelSignal::new(rx);
         let app_data = app_data.clone();
-        create_effect(move |_| {
+        Effect::new(move |_| {
             if let Some(CoreNotification::OpenPaths { paths }) = notification.get() {
                 if let Some(window_tab) = app_data.active_window_tab() {
                     window_tab.open_paths(&paths);
@@ -4245,152 +4277,196 @@ pub fn window_menu(
     lapce_command: Listener<LapceCommand>,
     workbench_command: Listener<LapceWorkbenchCommand>,
 ) -> Menu {
-    Menu::new("Lapce")
-        .entry({
-            let mut menu = Menu::new("Lapce")
-                .entry(MenuItem::new("About Lapce").action(move || {
-                    workbench_command.send(LapceWorkbenchCommand::ShowAbout)
-                }))
+    Menu::new()
+        .submenu("Lapce", |mut m| {
+            let mut m = m
+                .item("About Lapce", move |i| {
+                    i.action(move || {
+                        workbench_command.send(LapceWorkbenchCommand::ShowAbout)
+                    })
+                })
                 .separator()
-                .entry(
-                    Menu::new("Settings...")
-                        .entry(MenuItem::new("Open Settings").action(move || {
+                .submenu("Settings...", |mut m| {
+                    m.item("Open Settings", move |i| {
+                        i.action(move || {
                             workbench_command
                                 .send(LapceWorkbenchCommand::OpenSettings);
-                        }))
-                        .entry(MenuItem::new("Open Keyboard Shortcuts").action(
-                            move || {
+                        })
+                    })
+                    .item(
+                        "Open Keyboard Shortcuts",
+                        move |i| {
+                            i.action(move || {
                                 workbench_command.send(
                                     LapceWorkbenchCommand::OpenKeyboardShortcuts,
                                 );
-                            },
-                        )),
-                )
+                            })
+                        },
+                    )
+                })
                 .separator()
-                .entry(MenuItem::new("Quit Lapce").action(move || {
-                    workbench_command.send(LapceWorkbenchCommand::Quit);
-                }));
+                .item("Quit Lapce", move |i| {
+                    i.action(move || {
+                        workbench_command.send(LapceWorkbenchCommand::Quit);
+                    })
+                });
             if cfg!(target_os = "macos") {
-                menu = menu
+                m = m
                     .separator()
-                    .entry(MenuItem::new("Hide Lapce"))
-                    .entry(MenuItem::new("Hide Others"))
-                    .entry(MenuItem::new("Show All"))
+                    .item("Hide Lapce", move |i| i)
+                    .item("Hide Others", move |i| i)
+                    .item("Show All", move |i| i)
             }
-            menu
+            m
         })
         .separator()
-        .entry(
-            Menu::new("File")
-                .entry(MenuItem::new("New File").action(move || {
+        .submenu("File", move |m| {
+            m.item("New File", move |i| {
+                i.action(move || {
                     workbench_command.send(LapceWorkbenchCommand::NewFile);
-                }))
-                .separator()
-                .entry(MenuItem::new("Open").action(move || {
+                })
+            })
+            .separator()
+            .item("Open", move |i| {
+                i.action(move || {
                     workbench_command.send(LapceWorkbenchCommand::OpenFile);
-                }))
-                .entry(MenuItem::new("Open Folder").action(move || {
+                })
+            })
+            .item("Open Folder", move |i| {
+                i.action(move || {
                     workbench_command.send(LapceWorkbenchCommand::OpenFolder);
-                }))
-                .separator()
-                .entry(MenuItem::new("Save").action(move || {
+                })
+            })
+            .separator()
+            .item("Save", move |i| {
+                i.action(move || {
                     lapce_command.send(LapceCommand {
                         kind: CommandKind::Focus(FocusCommand::Save),
                         data: None,
                     });
-                }))
-                .entry(MenuItem::new("Save All").action(move || {
+                })
+            })
+            .item("Save All", move |i| {
+                i.action(move || {
                     workbench_command.send(LapceWorkbenchCommand::SaveAll);
-                }))
-                .separator()
-                .entry(MenuItem::new("Close Folder").action(move || {
+                })
+            })
+            .separator()
+            .item("Close Folder", move |i| {
+                i.action(move || {
                     workbench_command.send(LapceWorkbenchCommand::CloseFolder);
-                }))
-                .entry(MenuItem::new("Close Window").action(move || {
+                })
+            })
+            .item("Close Window", move |i| {
+                i.action(move || {
                     workbench_command.send(LapceWorkbenchCommand::CloseWindow);
-                })),
-        )
-        .entry(
-            Menu::new("Edit")
-                .entry(MenuItem::new("Cut").action(move || {
+                })
+            })
+        })
+        .submenu("Edit", move |m| {
+            m.item("Cut", move |i| {
+                i.action(move || {
                     lapce_command.send(LapceCommand {
                         kind: CommandKind::Edit(EditCommand::ClipboardCut),
                         data: None,
                     });
-                }))
-                .entry(MenuItem::new("Copy").action(move || {
+                })
+            })
+            .item("Copy", move |i| {
+                i.action(move || {
                     lapce_command.send(LapceCommand {
                         kind: CommandKind::Edit(EditCommand::ClipboardCopy),
                         data: None,
                     });
-                }))
-                .entry(MenuItem::new("Paste").action(move || {
+                })
+            })
+            .item("Paste", move |i| {
+                i.action(move || {
                     lapce_command.send(LapceCommand {
                         kind: CommandKind::Edit(EditCommand::ClipboardPaste),
                         data: None,
                     });
-                }))
-                .separator()
-                .entry(MenuItem::new("Undo").action(move || {
+                })
+            })
+            .separator()
+            .item("Undo", move |i| {
+                i.action(move || {
                     lapce_command.send(LapceCommand {
                         kind: CommandKind::Edit(EditCommand::Undo),
                         data: None,
                     });
-                }))
-                .entry(MenuItem::new("Redo").action(move || {
+                })
+            })
+            .item("Redo", move |i| {
+                i.action(move || {
                     lapce_command.send(LapceCommand {
                         kind: CommandKind::Edit(EditCommand::Redo),
                         data: None,
                     });
-                }))
-                .separator()
-                .entry(MenuItem::new("Find").action(move || {
+                })
+            })
+            .separator()
+            .item("Find", move |i| {
+                i.action(move || {
                     lapce_command.send(LapceCommand {
                         kind: CommandKind::Focus(FocusCommand::Search),
                         data: None,
                     });
-                })),
-        )
+                })
+            })
+        })
 }
+
 fn tab_secondary_click(
     internal_command: Listener<InternalCommand>,
     editor_tab_id: EditorTabId,
     child: EditorTabChild,
 ) {
-    let mut menu = Menu::new("");
+    let mut menu = Menu::new();
     let child_other = child.clone();
     let child_right = child.clone();
     let child_left = child.clone();
     menu = menu
-        .entry(MenuItem::new("Close").action(move || {
-            internal_command.send(InternalCommand::EditorTabChildClose {
-                editor_tab_id,
-                child: child.clone(),
-            });
-        }))
-        .entry(MenuItem::new("Close Other Tabs").action(move || {
-            internal_command.send(InternalCommand::EditorTabCloseByKind {
-                editor_tab_id,
-                child: child_other.clone(),
-                kind: TabCloseKind::CloseOther,
-            });
-        }))
-        .entry(MenuItem::new("Close All Tabs").action(move || {
-            internal_command.send(InternalCommand::EditorTabClose { editor_tab_id });
-        }))
-        .entry(MenuItem::new("Close Tabs to the Right").action(move || {
-            internal_command.send(InternalCommand::EditorTabCloseByKind {
-                editor_tab_id,
-                child: child_right.clone(),
-                kind: TabCloseKind::CloseToRight,
-            });
-        }))
-        .entry(MenuItem::new("Close Tabs to the Left").action(move || {
-            internal_command.send(InternalCommand::EditorTabCloseByKind {
-                editor_tab_id,
-                child: child_left.clone(),
-                kind: TabCloseKind::CloseToLeft,
-            });
-        }));
+        .item("Close", move |i| {
+            i.action(move || {
+                internal_command.send(InternalCommand::EditorTabChildClose {
+                    editor_tab_id,
+                    child: child.clone(),
+                });
+            })
+        })
+        .item("Close Other Tabs", move |i| {
+            i.action(move || {
+                internal_command.send(InternalCommand::EditorTabCloseByKind {
+                    editor_tab_id,
+                    child: child_other.clone(),
+                    kind: TabCloseKind::CloseOther,
+                });
+            })
+        })
+        .item("Close All Tabs", move |i| {
+            i.action(move || {
+                internal_command
+                    .send(InternalCommand::EditorTabClose { editor_tab_id });
+            })
+        })
+        .item("Close Tabs to the Right", move |i| {
+            i.action(move || {
+                internal_command.send(InternalCommand::EditorTabCloseByKind {
+                    editor_tab_id,
+                    child: child_right.clone(),
+                    kind: TabCloseKind::CloseToRight,
+                });
+            })
+        })
+        .item("Close Tabs to the Left", move |i| {
+            i.action(move || {
+                internal_command.send(InternalCommand::EditorTabCloseByKind {
+                    editor_tab_id,
+                    child: child_left.clone(),
+                    kind: TabCloseKind::CloseToLeft,
+                });
+            })
+        });
     show_context_menu(menu, None);
 }

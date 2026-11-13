@@ -17,12 +17,12 @@ use floem::{
     ViewId,
     action::exec_after,
     ext_event::create_ext_action,
-    keyboard::Modifiers,
     peniko::Color,
+    prelude::Modifiers,
     reactive::{
         ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith, batch,
     },
-    text::{Attrs, AttrsList, FamilyOwned, TextLayout},
+    text::{Affinity, Attrs, AttrsList, FamilyOwned, TextLayout},
     views::editor::{
         CursorInfo, Editor, EditorStyle,
         actions::CommonAction,
@@ -92,7 +92,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct DiagnosticData {
     pub expanded: RwSignal<bool>,
-    pub diagnostics: RwSignal<im::Vector<Diagnostic>>,
+    pub diagnostics: RwSignal<imbl::Vector<Diagnostic>>,
     pub diagnostics_span: RwSignal<Spans<Diagnostic>>,
 }
 
@@ -158,9 +158,10 @@ pub struct DocInfo {
 
 /// (Offset -> (Plugin the code actions are from, Code Actions))
 pub type CodeActions =
-    im::HashMap<usize, (PluginId, im::Vector<CodeActionOrCommand>)>;
+    imbl::HashMap<usize, (PluginId, imbl::Vector<CodeActionOrCommand>)>;
 
-pub type AllCodeLens = im::HashMap<usize, (PluginId, usize, im::Vector<CodeLens>)>;
+pub type AllCodeLens =
+    imbl::HashMap<usize, (PluginId, usize, imbl::Vector<CodeLens>)>;
 
 #[derive(Clone, Debug)]
 enum DocumentHighlightsStatus {
@@ -179,6 +180,7 @@ impl From<&DocumentHighlight> for lapce_core::selection::SelRegion {
         Self {
             start: value.start,
             end: value.end,
+            affinity: CursorAffinity::Backward,
             horiz: None,
         }
     }
@@ -239,8 +241,8 @@ pub struct Doc {
     pub folding_ranges: RwSignal<FoldingRanges>,
 
     /// Stores information about different versions of the document from source control.
-    histories: RwSignal<im::HashMap<String, DocumentHistory>>,
-    pub head_changes: RwSignal<im::Vector<DiffLines>>,
+    histories: RwSignal<imbl::HashMap<String, DocumentHistory>>,
+    pub head_changes: RwSignal<imbl::Vector<DiffLines>>,
 
     line_styles: Rc<RefCell<LineStyles>>,
     pub parser: Rc<RefCell<BracketParser>>,
@@ -298,15 +300,15 @@ impl Doc {
                 read_only: false,
             }),
             loaded: cx.create_rw_signal(false),
-            histories: cx.create_rw_signal(im::HashMap::new()),
-            head_changes: cx.create_rw_signal(im::Vector::new()),
+            histories: cx.create_rw_signal(imbl::HashMap::new()),
+            head_changes: cx.create_rw_signal(imbl::Vector::new()),
             sticky_headers: Rc::new(RefCell::new(HashMap::new())),
-            code_actions: cx.create_rw_signal(im::HashMap::new()),
+            code_actions: cx.create_rw_signal(imbl::HashMap::new()),
             find_result: FindResult::new(cx),
             preedit: PreeditData::new(cx),
             editors,
             common,
-            code_lens: cx.create_rw_signal(im::HashMap::new()),
+            code_lens: cx.create_rw_signal(imbl::HashMap::new()),
             document_symbol_data: cx.create_rw_signal(None),
             folding_ranges: cx.create_rw_signal(FoldingRanges::default()),
             get_highlights_status: cx
@@ -342,7 +344,7 @@ impl Doc {
             inlay_hints: cx.create_rw_signal(None),
             diagnostics: DiagnosticData {
                 expanded: cx.create_rw_signal(true),
-                diagnostics: cx.create_rw_signal(im::Vector::new()),
+                diagnostics: cx.create_rw_signal(imbl::Vector::new()),
                 diagnostics_span: cx.create_rw_signal(SpansBuilder::new(0).build()),
             },
             completion_lens: cx.create_rw_signal(None),
@@ -351,16 +353,16 @@ impl Doc {
             inline_completion_pos: cx.create_rw_signal((0, 0)),
             cache_rev: cx.create_rw_signal(0),
             content: cx.create_rw_signal(content),
-            histories: cx.create_rw_signal(im::HashMap::new()),
-            head_changes: cx.create_rw_signal(im::Vector::new()),
+            histories: cx.create_rw_signal(imbl::HashMap::new()),
+            head_changes: cx.create_rw_signal(imbl::Vector::new()),
             sticky_headers: Rc::new(RefCell::new(HashMap::new())),
             loaded: cx.create_rw_signal(true),
             find_result: FindResult::new(cx),
-            code_actions: cx.create_rw_signal(im::HashMap::new()),
+            code_actions: cx.create_rw_signal(imbl::HashMap::new()),
             preedit: PreeditData::new(cx),
             editors,
             common,
-            code_lens: cx.create_rw_signal(im::HashMap::new()),
+            code_lens: cx.create_rw_signal(imbl::HashMap::new()),
             document_symbol_data: cx.create_rw_signal(None),
             folding_ranges: cx.create_rw_signal(FoldingRanges::default()),
             get_highlights_status: cx
@@ -396,7 +398,7 @@ impl Doc {
             inlay_hints: cx.create_rw_signal(None),
             diagnostics: DiagnosticData {
                 expanded: cx.create_rw_signal(true),
-                diagnostics: cx.create_rw_signal(im::Vector::new()),
+                diagnostics: cx.create_rw_signal(imbl::Vector::new()),
                 diagnostics_span: cx.create_rw_signal(SpansBuilder::new(0).build()),
             },
             completion_lens: cx.create_rw_signal(None),
@@ -407,14 +409,14 @@ impl Doc {
             content: cx.create_rw_signal(content),
             sticky_headers: Rc::new(RefCell::new(HashMap::new())),
             loaded: cx.create_rw_signal(true),
-            histories: cx.create_rw_signal(im::HashMap::new()),
-            head_changes: cx.create_rw_signal(im::Vector::new()),
-            code_actions: cx.create_rw_signal(im::HashMap::new()),
+            histories: cx.create_rw_signal(imbl::HashMap::new()),
+            head_changes: cx.create_rw_signal(imbl::Vector::new()),
+            code_actions: cx.create_rw_signal(imbl::HashMap::new()),
             find_result: FindResult::new(cx),
             preedit: PreeditData::new(cx),
             editors,
             common,
-            code_lens: cx.create_rw_signal(im::HashMap::new()),
+            code_lens: cx.create_rw_signal(imbl::HashMap::new()),
             document_symbol_data: cx.create_rw_signal(None),
             folding_ranges: cx.create_rw_signal(FoldingRanges::default()),
             get_highlights_status: cx
@@ -746,6 +748,7 @@ impl Doc {
                     let selection = lapce_core::selection::Selection::region(
                         buffer.offset_of_position(&edit.range.start),
                         buffer.offset_of_position(&edit.range.end),
+                        CursorAffinity::Backward,
                     );
                     (selection, edit.new_text.as_str())
                 })
@@ -1007,7 +1010,7 @@ impl Doc {
                                                 codelens.range.start.line as usize,
                                             )
                                         }),
-                                        im::Vector::new(),
+                                        imbl::Vector::new(),
                                     )
                                 });
                             entry.2.push_back(codelens);
@@ -1372,7 +1375,7 @@ impl Doc {
         lines
     }
 
-    pub fn head_changes(&self) -> RwSignal<im::Vector<DiffLines>> {
+    pub fn head_changes(&self) -> RwSignal<imbl::Vector<DiffLines>> {
         self.head_changes
     }
 
@@ -1452,7 +1455,7 @@ impl Doc {
         rayon::spawn(move || {
             let changes =
                 rope_diff(left_rope, right_rope, rev, atomic_rev.clone(), None);
-            send(changes.map(im::Vector::from));
+            send(changes.map(imbl::Vector::from));
         });
     }
 
@@ -2100,16 +2103,12 @@ impl Styling for DocStyling {
         }))
     }
 
-    fn weight(&self, _: EditorId, _line: usize) -> floem::text::Weight {
-        floem::text::Weight::NORMAL
+    fn weight(&self, _: EditorId, _line: usize) -> floem::text::FontWeight {
+        floem::text::FontWeight::NORMAL
     }
 
-    fn italic_style(&self, _: EditorId, _line: usize) -> floem::text::Style {
-        floem::text::Style::Normal
-    }
-
-    fn stretch(&self, _: EditorId, _line: usize) -> floem::text::Stretch {
-        floem::text::Stretch::Normal
+    fn italic_style(&self, _: EditorId, _line: usize) -> floem::text::FontStyle {
+        floem::text::FontStyle::Normal
     }
 
     fn indent_line(&self, _: EditorId, line: usize, line_content: &str) -> usize {
@@ -2174,23 +2173,50 @@ impl Styling for DocStyling {
 
         let phantom_text = doc.phantom_text(edid, style, line);
 
-        let phantom_styles = phantom_text
+        phantom_text
             .offset_size_iter()
             .filter(move |(_, _, _, p)| p.bg.is_some() || p.under_line.is_some())
-            .flat_map(move |(col_shift, size, col, phantom)| {
-                let start = col + col_shift;
-                let end = start + size;
+            .fold(
+                &mut layout_line.extra_style,
+                |styles, (col_shift, size, col, phantom)| {
+                    layout.selection_geometry_with_line_metrics(
+                        &layout.selection_from_byte_range(
+                            col + col_shift,
+                            col + col_shift + size,
+                        ),
+                        |x, y, x1, y1| {
+                            let width = x1 - x;
+                            let height = y1 - y;
+                            if width != 0.0 && height != 0.0 {
+                                styles.push(LineExtraStyle {
+                                    x,
+                                    y,
+                                    width: Some(width),
+                                    height,
+                                    bg_color: phantom.bg,
+                                    under_line: phantom.under_line,
+                                    wave_line: None,
+                                });
+                            }
+                        },
+                    );
+                    styles
+                },
+            );
+        // .flat_map(move |(col_shift, size, col, phantom)| {
+        //     let start = col + col_shift;
+        //     let end = start + size;
 
-                extra_styles_for_range(
-                    layout,
-                    start,
-                    end,
-                    phantom.bg,
-                    phantom.under_line,
-                    None,
-                )
-            });
-        layout_line.extra_style.extend(phantom_styles);
+        //     extra_styles_for_range(
+        //         layout,
+        //         start,
+        //         end,
+        //         phantom.bg,
+        //         phantom.under_line,
+        //         None,
+        //     )
+        // });
+        // layout_line.extra_style.extend(phantom_styles);
 
         let (start_offset, end_offset) = doc.buffer.with_untracked(|buffer| {
             (buffer.offset_of_line(line), buffer.offset_of_line(line + 1))
@@ -2232,15 +2258,33 @@ impl Styling for DocStyling {
                             _ => LapceColor::LAPCE_WARN,
                         };
                         let color = config.color(color_name);
-                        let styles = extra_styles_for_range(
-                            layout,
-                            start,
-                            end,
-                            None,
-                            None,
-                            Some(color),
+                        layout.selection_geometry_with_line_metrics(
+                            &layout.selection_from_byte_range(start, end),
+                            |x, y, x1, y1| {
+                                let width = x1 - x;
+                                let height = y1 - y;
+                                if width != 0.0 && height != 0.0 {
+                                    layout_line.extra_style.push(LineExtraStyle {
+                                        x,
+                                        y,
+                                        width: Some(width),
+                                        height,
+                                        bg_color: None,
+                                        under_line: None,
+                                        wave_line: Some(color),
+                                    });
+                                }
+                            },
                         );
-                        layout_line.extra_style.extend(styles);
+                        // let styles = extra_styles_for_range(
+                        //     layout,
+                        //     start,
+                        //     end,
+                        //     None,
+                        //     None,
+                        //     Some(color),
+                        // );
+                        // layout_line.extra_style.extend(styles);
                     }
                 });
         });
@@ -2334,52 +2378,52 @@ fn should_blink(
     }
 }
 
-fn extra_styles_for_range(
-    text_layout: &TextLayout,
-    start: usize,
-    end: usize,
-    bg_color: Option<Color>,
-    under_line: Option<Color>,
-    wave_line: Option<Color>,
-) -> impl Iterator<Item = LineExtraStyle> + '_ {
-    let start_hit = text_layout.hit_position(start);
-    let end_hit = text_layout.hit_position(end);
+// fn extra_styles_for_range(
+//     text_layout: &TextLayout,
+//     start: usize,
+//     end: usize,
+//     bg_color: Option<Color>,
+//     under_line: Option<Color>,
+//     wave_line: Option<Color>,
+// ) -> impl Iterator<Item = LineExtraStyle> + '_ {
+//     let start_hit = text_layout.cursor_point(start, Affinity::Upstream);
+//     let end_hit = text_layout.cursor_point(end, Affinity::Upstream);
 
-    text_layout
-        .layout_runs()
-        .enumerate()
-        .filter_map(move |(current_line, run)| {
-            if current_line < start_hit.line || current_line > end_hit.line {
-                return None;
-            }
+//     text_layout
+//         .layout_runs()
+//         .enumerate()
+//         .filter_map(move |(current_line, run)| {
+//             if current_line < start_hit.line || current_line > end_hit.line {
+//                 return None;
+//             }
 
-            let x = if current_line == start_hit.line {
-                start_hit.point.x
-            } else {
-                run.glyphs.first().map(|g| g.x).unwrap_or(0.0) as f64
-            };
-            let end_x = if current_line == end_hit.line {
-                end_hit.point.x
-            } else {
-                run.glyphs.last().map(|g| g.x + g.w).unwrap_or(0.0) as f64
-            };
-            let width = end_x - x;
+//             let x = if current_line == start_hit.line {
+//                 start_hit.point.x
+//             } else {
+//                 run.glyphs.first().map(|g| g.x).unwrap_or(0.0) as f64
+//             };
+//             let end_x = if current_line == end_hit.line {
+//                 end_hit.point.x
+//             } else {
+//                 run.glyphs.last().map(|g| g.x + g.w).unwrap_or(0.0) as f64
+//             };
+//             let width = end_x - x;
 
-            if width == 0.0 {
-                return None;
-            }
+//             if width == 0.0 {
+//                 return None;
+//             }
 
-            let height = (run.max_ascent + run.max_descent) as f64;
-            let y = run.line_y as f64 - run.max_ascent as f64;
+//             let height = (run.max_ascent + run.max_descent) as f64;
+//             let y = run.line_y as f64 - run.max_ascent as f64;
 
-            Some(LineExtraStyle {
-                x,
-                y,
-                width: Some(width),
-                height,
-                bg_color,
-                under_line,
-                wave_line,
-            })
-        })
-}
+//             Some(LineExtraStyle {
+//                 x,
+//                 y,
+//                 width: Some(width),
+//                 height,
+//                 bg_color,
+//                 under_line,
+//                 wave_line,
+//             })
+//         })
+// }

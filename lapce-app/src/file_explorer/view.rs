@@ -2,20 +2,23 @@ use std::{path::Path, rc::Rc, sync::Arc};
 
 use floem::{
     View,
-    event::{Event, EventListener},
+    context::LayoutChanged,
+    event::Event,
     kurbo::Rect,
     peniko::Color,
+    prelude::listener as EventListener,
     reactive::{
         ReadSignal, RwSignal, SignalGet, SignalUpdate, SignalWith, create_rw_signal,
     },
     style::{AlignItems, CursorStyle, Position, Style},
-    text::Style as FontStyle,
+    text::FontStyle,
+    ui_events::pointer::PointerButton,
     views::{
-        Container, Decorators, container, dyn_stack, label, scroll, stack, svg,
+        Container, Decorators, Scroll, container, dyn_stack, label, stack, svg,
         virtual_stack,
     },
 };
-use lapce_core::selection::Selection;
+use lapce_core::{cursor::CursorAffinity, selection::Selection};
 use lapce_rpc::{
     file::{FileNodeViewData, FileNodeViewKind, Naming},
     source_control::FileDiffKind,
@@ -115,9 +118,13 @@ fn initialize_naming_editor(
 
     let doc = data.naming_editor_data.doc();
     doc.reload(text, true);
-    data.naming_editor_data
-        .cursor()
-        .update(|cursor| cursor.set_insert(Selection::region(0, selection_end)));
+    data.naming_editor_data.cursor().update(|cursor| {
+        cursor.set_insert(Selection::region(
+            0,
+            selection_end,
+            CursorAffinity::Backward,
+        ))
+    });
 
     data.naming
         .update(|naming| naming.set_editor_needs_reset(false));
@@ -254,7 +261,7 @@ fn file_node_input_view(data: FileExplorerData, err: Option<String>) -> Containe
         .is_focused(is_focused)
         .key_focus(text_input_file_explorer_data)
         .build_editor(naming_editor_data.clone())
-        .on_event_stop(EventListener::FocusLost, move |_| {
+        .on_event_stop(EventListener::FocusLost, move |_, _| {
             data.finish_naming();
             data.naming.set(Naming::None);
         })
@@ -318,7 +325,7 @@ fn file_explorer_view(
     let scroll_rect = create_rw_signal(Rect::ZERO);
     let focus = data.common.focus;
 
-    scroll(
+    Scroll::new(
         virtual_stack(
             move || FileNodeVirtualList::new(root.get(), data.naming.get()),
             move |node| (node.kind.clone(), node.is_dir, node.open, node.level),
@@ -452,11 +459,11 @@ fn file_explorer_view(
                     })
                     .on_event_stop(
                         EventListener::PointerDown,
-                        move |event| {
-                            if let Event::PointerDown(pointer_event) = event {
-                                if pointer_event.button.is_auxiliary() {
-                                    aux_click_data.middle_click(&aux_click_path);
-                                }
+                        move |_, event| {
+                            if event.button.is_some_and(|button| {
+                                button == PointerButton::Auxiliary
+                            }) {
+                                aux_click_data.middle_click(&aux_click_path);
                             }
                         },
                     )
@@ -476,9 +483,12 @@ fn file_explorer_view(
             }
         }
     })
-    .on_resize(move |rect| {
-        scroll_rect.set(rect);
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            scroll_rect.set(*new_box);
+        },
+    )
     .scroll_to(move || {
         if let Some(line) = scroll_to_line.get() {
             let line_height = ui_line_height.get_untracked();
@@ -536,13 +546,13 @@ fn open_editors_view(window_tab_data: Rc<WindowTabData>) -> impl View {
                 || "Close",
                 config,
             )
-            .on_event_stop(EventListener::PointerEnter, move |_| {
+            .on_event_stop(EventListener::PointerEnter, move |_, _| {
                 hovered.set(true);
             })
-            .on_event_stop(EventListener::PointerLeave, move |_| {
+            .on_event_stop(EventListener::PointerLeave, move |_, _| {
                 hovered.set(false);
             })
-            .on_event_stop(EventListener::PointerDown, |_| {})
+            .on_event_stop(EventListener::PointerDown, |_, _| {})
             .style(|s| s.margin_left(10.0)),
             container(svg(move || info.with(|info| info.icon.clone())).style(
                 move |s| {
@@ -581,7 +591,7 @@ fn open_editors_view(window_tab_data: Rc<WindowTabData>) -> impl View {
                     s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
                 })
         })
-        .on_event_cont(EventListener::PointerDown, move |_| {
+        .on_event_cont(EventListener::PointerDown, move |_, _| {
             editor_tab.update(|editor_tab| {
                 editor_tab.active = child_index.get_untracked();
             });
@@ -589,7 +599,7 @@ fn open_editors_view(window_tab_data: Rc<WindowTabData>) -> impl View {
         })
     };
 
-    scroll(
+    Scroll::new(
         dyn_stack(
             move || editor_tabs.get().into_iter().enumerate(),
             move |(index, (editor_tab_id, _))| (*index, *editor_tab_id),

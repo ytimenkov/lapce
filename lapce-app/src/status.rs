@@ -5,7 +5,9 @@ use std::{
 
 use floem::{
     View,
+    context::LayoutChanged,
     event::EventPropagation,
+    prelude::listener as EventListener,
     reactive::{
         Memo, ReadSignal, RwSignal, SignalGet, SignalUpdate, SignalWith, create_memo,
     },
@@ -121,7 +123,7 @@ pub fn status(
                     .color(fg)
                     .background(bg)
                     .height_pct(100.0)
-                    .align_items(Some(AlignItems::Center))
+                    .align_items(AlignItems::Center)
                     .selectable(false)
             }),
             stack((
@@ -145,27 +147,24 @@ pub fn status(
                 })
                 .height_pct(100.0)
                 .padding_horiz(10.0)
-                .align_items(Some(AlignItems::Center))
+                .align_items(AlignItems::Center)
                 .hover(|s| {
                     s.cursor(CursorStyle::Pointer).background(
                         config.get().color(LapceColor::PANEL_HOVERED_BACKGROUND),
                     )
                 })
             })
-            .on_event_cont(floem::event::EventListener::PointerDown, move |_| {
+            .on_event_cont(EventListener::PointerDown, move |_, _| {
                 pointer_down.set(true);
             })
-            .on_event(
-                floem::event::EventListener::PointerUp,
-                move |_| {
-                    if pointer_down.get() {
-                        workbench_command
-                            .send(LapceWorkbenchCommand::PaletteSCMReferences);
-                    }
-                    pointer_down.set(false);
-                    EventPropagation::Continue
-                },
-            ),
+            .on_event(EventListener::PointerUp, move |_, _| {
+                if pointer_down.get() {
+                    workbench_command
+                        .send(LapceWorkbenchCommand::PaletteSCMReferences);
+                }
+                pointer_down.set(false);
+                EventPropagation::Continue
+            }),
             {
                 let panel = panel.clone();
                 stack((
@@ -389,12 +388,15 @@ pub fn status(
                 .justify_end()
         }),
     ))
-    .on_resize(move |rect| {
-        let height = rect.height();
-        if height != status_height.get_untracked() {
-            status_height.set(height);
-        }
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            let height = new_box.height();
+            if height != status_height.get_untracked() {
+                status_height.set(height);
+            }
+        },
+    )
     .style(move |s| {
         let config = config.get();
         s.border_top(1.0)

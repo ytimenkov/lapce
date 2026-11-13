@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use floem::{
     View,
-    event::EventListener,
-    keyboard::Modifiers,
+    prelude::Modifiers,
+    prelude::listener as EventListener,
     reactive::{RwSignal, Scope, SignalGet, SignalUpdate},
     style::{CursorStyle, Display, Position},
     views::{Decorators, container, label, stack, svg},
@@ -179,7 +179,7 @@ fn exclusive_popup<V: View + 'static>(
                         .border_color(config.color(LapceColor::LAPCE_BORDER))
                         .background(config.color(LapceColor::PANEL_BACKGROUND))
                 })
-                .on_event_stop(EventListener::PointerDown, move |_| {}),
+                .on_event_stop(EventListener::PointerDown, move |_, _| {}),
         )
         .style(move |s| {
             s.flex_grow(1.0f32)
@@ -188,11 +188,11 @@ fn exclusive_popup<V: View + 'static>(
                 .hover(move |s| s.cursor(CursorStyle::Default))
         }),
     )
-    .on_event_stop(EventListener::PointerDown, move |_| {
+    .on_event_stop(EventListener::PointerDown, move |_, _| {
         window_tab_data.about_data.close();
     })
     // Prevent things behind the grayed out area from being hovered.
-    .on_event_stop(EventListener::PointerMove, move |_| {})
+    .on_event_stop(EventListener::PointerMove, move |_, _| {})
     .style(move |s| {
         s.display(if visibility.get() {
             Display::Flex

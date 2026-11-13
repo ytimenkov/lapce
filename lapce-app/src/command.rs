@@ -2,8 +2,7 @@ use std::{path::PathBuf, rc::Rc};
 
 pub use floem::views::editor::command::CommandExecuted;
 use floem::{
-    ViewId, keyboard::Modifiers, peniko::kurbo::Vec2,
-    views::editor::command::Command,
+    ViewId, peniko::kurbo::Vec2, prelude::Modifiers, views::editor::command::Command,
 };
 use indexmap::IndexMap;
 use lapce_core::command::{
@@ -707,7 +706,7 @@ pub enum InternalCommand {
         offset: usize,
         mouse_click: bool,
         plugin_id: PluginId,
-        code_actions: im::Vector<CodeActionOrCommand>,
+        code_actions: imbl::Vector<CodeActionOrCommand>,
     },
     RunCodeAction {
         plugin_id: PluginId,

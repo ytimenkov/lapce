@@ -2,14 +2,15 @@ use std::{rc::Rc, sync::Arc};
 
 use floem::{
     View,
-    event::{Event, EventListener},
+    event::Event,
+    prelude::listener as EventListener,
     reactive::{
         Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
         create_effect, create_memo, create_rw_signal,
     },
     style::CursorStyle,
     views::{
-        Decorators, container, dyn_stack, label, scroll, stack, text, virtual_stack,
+        Decorators, Scroll, container, dyn_stack, label, stack, text, virtual_stack,
     },
 };
 use lapce_core::mode::Modes;
@@ -86,7 +87,7 @@ pub fn keymap_view(editors: Editors, common: Rc<CommonData>) -> impl View {
                     None
                 }
             })
-            .collect::<im::Vector<(LapceCommand, Option<KeyMap>)>>();
+            .collect::<imbl::Vector<(LapceCommand, Option<KeyMap>)>>();
         items.extend(keypress.commands_without_keymap.iter().filter_map(|cmd| {
             let match_pattern = cmd.kind.str().replace('_', " ").contains(&pattern)
                 || cmd
@@ -102,7 +103,7 @@ pub fn keymap_view(editors: Editors, common: Rc<CommonData>) -> impl View {
         items
             .into_iter()
             .enumerate()
-            .collect::<im::Vector<(usize, (LapceCommand, Option<KeyMap>))>>()
+            .collect::<imbl::Vector<(usize, (LapceCommand, Option<KeyMap>))>>()
     };
 
     let view_fn =
@@ -344,7 +345,7 @@ pub fn keymap_view(editors: Editors, common: Rc<CommonData>) -> impl View {
                 .background(config.color(LapceColor::EDITOR_CURRENT_LINE))
         }),
         container(
-            scroll(
+            Scroll::new(
                 virtual_stack(
                     items,
                     |(i, (cmd, keymap)): &(
@@ -500,7 +501,7 @@ fn keyboard_picker_view(
                     .border_color(config.color(LapceColor::LAPCE_BORDER))
             }),
         ))
-        .on_event_stop(EventListener::PointerDown, |_| {})
+        .on_event_stop(EventListener::PointerDown, |_, _| {})
         .style(move |s| {
             let config = config.get();
             s.items_center()
@@ -514,33 +515,29 @@ fn keyboard_picker_view(
         }),
     )
     .keyboard_navigable()
-    .on_event_stop(EventListener::KeyDown, move |event| {
-        if let Event::KeyDown(key_event) = event {
-            if let Some(keypress) = KeyPressData::keypress(key_event) {
-                if let Some(keypress) = keypress.keymap_press() {
-                    picker.keys.update(|keys| {
-                        if let Some((last_key, last_key_confirmed)) = keys.last() {
-                            if !*last_key_confirmed && last_key.is_modifiers() {
-                                keys.pop();
-                            }
+    .on_event_stop(EventListener::KeyDown, move |_, event| {
+        if let Some(keypress) = KeyPressData::keypress(event) {
+            if let Some(keypress) = keypress.keymap_press() {
+                picker.keys.update(|keys| {
+                    if let Some((last_key, last_key_confirmed)) = keys.last() {
+                        if !*last_key_confirmed && last_key.is_modifiers() {
+                            keys.pop();
                         }
-                        if keys.len() == 2 {
-                            keys.clear();
-                        }
-                        keys.push((keypress, false));
-                    })
-                }
+                    }
+                    if keys.len() == 2 {
+                        keys.clear();
+                    }
+                    keys.push((keypress, false));
+                })
             }
         }
     })
-    .on_event_stop(EventListener::KeyUp, move |event| {
-        if let Event::KeyUp(_key_event) = event {
-            picker.keys.update(|keys| {
-                if let Some((_last_key, last_key_confirmed)) = keys.last_mut() {
-                    *last_key_confirmed = true;
-                }
-            })
-        }
+    .on_event_stop(EventListener::KeyUp, move |_, _| {
+        picker.keys.update(|keys| {
+            if let Some((_last_key, last_key_confirmed)) = keys.last_mut() {
+                *last_key_confirmed = true;
+            }
+        })
     })
     .style(move |s| {
         s.absolute()

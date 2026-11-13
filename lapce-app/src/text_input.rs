@@ -3,13 +3,14 @@ use std::{rc::Rc, sync::Arc};
 use floem::{
     Renderer, View, ViewId,
     action::{set_ime_allowed, set_ime_cursor_area},
-    context::EventCx,
-    event::{Event, EventListener, EventPropagation},
+    context::{EventCx, LayoutChanged},
+    event::{Event, EventPropagation, ImeEvent, PointerScrollEventExt},
     kurbo::Stroke,
     peniko::{
         Color,
         kurbo::{Line, Point, Rect, Size, Vec2},
     },
+    prelude::listener as EventListener,
     prop_extractor,
     reactive::{
         Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
@@ -19,14 +20,15 @@ use floem::{
         CursorStyle, FontFamily, FontSize, FontStyle, FontWeight, LineHeight,
         PaddingLeft, Style, TextColor,
     },
-    taffy::prelude::NodeId,
-    text::{Attrs, AttrsList, FamilyOwned, TextLayout},
-    unit::PxPct,
+    taffy::{self, prelude::NodeId},
+    text::{Affinity, Attrs, AttrsList, FamilyOwned, TextLayout},
+    ui_events::pointer::{PointerButton, PointerEvent},
+    unit::{FontSizeCx, Length, PxPct},
     views::Decorators,
 };
 use lapce_core::{
     buffer::rope_text::RopeText,
-    cursor::{Cursor, CursorMode},
+    cursor::{Cursor, CursorAffinity, CursorMode},
     selection::Selection,
 };
 use lapce_xi_rope::Rope;
@@ -239,41 +241,43 @@ fn text_input_full<T: KeyPressFocus + 'static>(
             .padding_horiz(10.0)
             .padding_vert(6.0)
     })
-    .on_move(move |pos| {
-        window_origin.set(pos);
-    })
-    .on_event_stop(EventListener::FocusGained, move |_| {
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_,
+              LayoutChanged {
+                  new_window_origin, ..
+              }| {
+            window_origin.set(*new_window_origin);
+        },
+    )
+    .on_event_stop(EventListener::FocusGained, move |_, _| {
         keyboard_focus.set(true);
         common_keyboard_focus.set(Some(id));
     })
-    .on_event_stop(EventListener::FocusLost, move |_| {
+    .on_event_stop(EventListener::FocusLost, move |_, _| {
         keyboard_focus.set(false);
         if common_keyboard_focus.get_untracked() == Some(id) {
             common_keyboard_focus.set(None);
         }
     })
-    .on_event(EventListener::KeyDown, move |event| {
-        if let Event::KeyDown(key_event) = event {
-            let keypress = keypress.get_untracked();
-            let key_focus = key_focus
-                .as_ref()
-                .map(|k| k as &dyn KeyPressFocus)
-                .unwrap_or(&e_data);
-            if keypress.key_down(key_event, key_focus).handled {
-                EventPropagation::Stop
-            } else {
-                EventPropagation::Continue
-            }
+    .on_event(EventListener::KeyDown, move |_, event| {
+        let keypress = keypress.get_untracked();
+        let key_focus = key_focus
+            .as_ref()
+            .map(|k| k as &dyn KeyPressFocus)
+            .unwrap_or(&e_data);
+        if keypress.key_down(event, key_focus).handled {
+            EventPropagation::Stop
         } else {
             EventPropagation::Continue
         }
     })
-    .on_event(EventListener::ImePreedit, move |event| {
+    .on_event(EventListener::ImePreedit, move |_, event| {
         if !is_focused.get_untracked() {
             return EventPropagation::Continue;
         }
 
-        if let Event::ImePreedit {
+        if let ImeEvent::Preedit {
             text,
             cursor: ime_cursor,
         } = event
@@ -287,15 +291,13 @@ fn text_input_full<T: KeyPressFocus + 'static>(
         }
         EventPropagation::Stop
     })
-    .on_event(EventListener::ImeCommit, move |event| {
+    .on_event(EventListener::ImeCommit, move |_, text| {
         if !is_focused.get_untracked() {
             return EventPropagation::Continue;
         }
 
-        if let Event::ImeCommit(text) = event {
-            ed2.clear_preedit();
-            ed2.receive_char(text.as_str());
-        }
+        ed2.clear_preedit();
+        ed2.receive_char(text);
         EventPropagation::Stop
     })
 }
@@ -365,13 +367,13 @@ impl TextInput {
 
     fn set_text_layout(&mut self) {
         let mut text_layout = TextLayout::new();
-        let mut attrs =
-            Attrs::new().color(self.style.color().unwrap_or(Color::BLACK));
-        if let Some(font_size) = self.style.font_size() {
-            attrs = attrs.font_size(font_size);
-        }
+        let mut attrs = Attrs::new()
+            .color(self.style.color().unwrap_or(Color::BLACK))
+            .font_size(self.style.font_size() as f32)
+            .line_height(self.style.line_height());
+
         if let Some(font_style) = self.style.font_style() {
-            attrs = attrs.style(font_style);
+            attrs = attrs.font_style(font_style);
         }
         let font_family = self.style.font_family().as_ref().map(|font_family| {
             let family: Vec<FamilyOwned> =
@@ -383,9 +385,6 @@ impl TextInput {
         }
         if let Some(font_weight) = self.style.font_weight() {
             attrs = attrs.weight(font_weight);
-        }
-        if let Some(line_height) = self.style.line_height() {
-            attrs = attrs.line_height(line_height);
         }
         text_layout.set_text(
             if self.content.is_empty() {
@@ -413,23 +412,38 @@ impl TextInput {
         self.placeholder_text_layout = Some(placeholder_text_layout);
     }
 
-    fn hit_index(&self, _cx: &mut EventCx, point: Point) -> usize {
+    fn hit_index(&self, point: Point) -> (usize, CursorAffinity) {
         self.text_layout.with_untracked(|text_layout| {
             if let Some(text_layout) = text_layout.as_ref() {
                 let padding_left =
-                    match self.id.get_combined_style().get(PaddingLeft) {
-                        PxPct::Px(v) => v,
-                        PxPct::Pct(pct) => {
-                            let layout = self.id.get_layout().unwrap_or_default();
-                            pct * layout.size.width as f64
-                        }
-                    };
-                let hit =
-                    text_layout.hit_point(Point::new(point.x - padding_left, 0.0));
-                hit.index.min(self.content.len())
-            } else {
-                0
+                    self.id.get_combined_style().get(PaddingLeft).resolve(
+                        self.id.get_layout().unwrap_or_default().size.width as f64,
+                        &FontSizeCx {
+                            font_size: self.style.font_size(),
+                            line_height: self
+                                .style
+                                .line_height()
+                                .resolve(self.style.font_size() as f32)
+                                as f64,
+                        },
+                    );
+
+                if let Some(cursor) =
+                    text_layout.hit_test(Point::new(point.x - padding_left, 0.0))
+                {
+                    return (
+                        text_layout
+                            .cursor_to_byte_index(&cursor)
+                            .min(self.content.len()),
+                        if cursor.affinity() == Affinity::Upstream {
+                            CursorAffinity::Backward
+                        } else {
+                            CursorAffinity::Forward
+                        },
+                    );
+                }
             }
+            (0, CursorAffinity::Backward)
         })
     }
 
@@ -557,139 +571,157 @@ impl View for TextInput {
         }
     }
 
-    fn layout(
-        &mut self,
-        cx: &mut floem::context::LayoutCx,
-    ) -> floem::taffy::prelude::NodeId {
-        cx.layout_node(self.id, true, |_cx| {
-            if self
-                .text_layout
-                .with_untracked(|text_layout| text_layout.is_none())
-                || self.placeholder_text_layout.is_none()
-            {
-                self.set_text_layout();
-            }
+    // fn layout(
+    //     &mut self,
+    //     cx: &mut floem::context::LayoutCx,
+    // ) -> floem::taffy::prelude::NodeId {
+    //     cx.layout_node(self.id, true, |_cx| {
+    //         if self
+    //             .text_layout
+    //             .with_untracked(|text_layout| text_layout.is_none())
+    //             || self.placeholder_text_layout.is_none()
+    //         {
+    //             self.set_text_layout();
+    //         }
 
-            let text_layout = self.text_layout;
-            text_layout.with_untracked(|text_layout| {
-                let text_layout = text_layout.as_ref().unwrap();
+    //         let text_layout = self.text_layout;
+    //         text_layout.with_untracked(|text_layout| {
+    //             let text_layout = text_layout.as_ref().unwrap();
 
-                let offset = self.cursor().get_untracked().offset();
-                let cursor_point = text_layout.hit_position(offset).point;
-                if cursor_point != self.cursor_pos {
-                    self.cursor_pos = cursor_point;
-                    self.ensure_cursor_visible();
-                }
+    //             let offset = self.cursor().get_untracked().offset();
+    //             let cursor_point = text_layout.hit_position(offset).point;
+    //             if cursor_point != self.cursor_pos {
+    //                 self.cursor_pos = cursor_point;
+    //                 self.ensure_cursor_visible();
+    //             }
 
-                let size = text_layout.size();
-                let height = size.height as f32;
+    //             let size = text_layout.size();
+    //             let height = size.height as f32;
 
-                if self.text_node.is_none() {
-                    self.text_node = Some(self.id.new_taffy_node());
-                }
+    //             if self.text_node.is_none() {
+    //                 self.text_node = Some(self.id.new_taffy_node());
+    //             }
 
-                let text_node = self.text_node.unwrap();
+    //             let text_node = self.text_node.unwrap();
 
-                let style = Style::new().height(height).to_taffy_style();
-                self.id.set_taffy_style(text_node, style);
-            });
+    //             let style = Style::new().height(height).to_taffy_style();
+    //             self.id.set_taffy_style(text_node, style);
+    //         });
 
-            vec![self.text_node.unwrap()]
-        })
-    }
+    //         vec![self.text_node.unwrap()]
+    //     })
+    // }
 
-    fn compute_layout(
-        &mut self,
-        _cx: &mut floem::context::ComputeLayoutCx,
-    ) -> Option<Rect> {
-        let layout = self.id.get_layout().unwrap_or_default();
+    // fn compute_layout(
+    //     &mut self,
+    //     _cx: &mut floem::context::ComputeLayoutCx,
+    // ) -> Option<Rect> {
+    //     let layout = self.id.get_layout().unwrap_or_default();
 
-        let style = self.id.get_combined_style();
-        let style = style.builtin();
-        let padding_left = match style.padding_left() {
-            PxPct::Px(padding) => padding,
-            PxPct::Pct(pct) => pct * layout.size.width as f64,
-        };
-        let padding_right = match style.padding_right() {
-            PxPct::Px(padding) => padding,
-            PxPct::Pct(pct) => pct * layout.size.width as f64,
-        };
+    //     let style = self.id.get_combined_style();
+    //     let style = style.builtin();
+    //     let padding_left = match style.padding_left() {
+    //         PxPct::Px(padding) => padding,
+    //         PxPct::Pct(pct) => pct * layout.size.width as f64,
+    //     };
+    //     let padding_right = match style.padding_right() {
+    //         PxPct::Px(padding) => padding,
+    //         PxPct::Pct(pct) => pct * layout.size.width as f64,
+    //     };
 
-        let size = Size::new(layout.size.width as f64, layout.size.height as f64);
-        let mut text_rect = size.to_rect();
-        text_rect.x0 += padding_left;
-        text_rect.x1 -= padding_right;
-        self.text_rect = text_rect;
+    //     let size = Size::new(layout.size.width as f64, layout.size.height as f64);
+    //     let mut text_rect = size.to_rect();
+    //     text_rect.x0 += padding_left;
+    //     text_rect.x1 -= padding_right;
+    //     self.text_rect = text_rect;
 
-        self.clamp_text_viewport(self.text_viewport);
+    //     self.clamp_text_viewport(self.text_viewport);
 
-        let text_node = self.text_node.unwrap();
-        let location = self.id.taffy_layout(text_node).unwrap_or_default().location;
-        self.layout_rect = size
-            .to_rect()
-            .with_origin(Point::new(location.x as f64, location.y as f64));
-        let offset = self.cursor().with_untracked(|c| c.offset());
-        let cursor_line = self.text_layout.with_untracked(|text_layout| {
-            let hit_position = text_layout.as_ref().unwrap().hit_position(offset);
-            let point = Point::new(location.x as f64, location.y as f64)
-                - self.text_viewport.origin().to_vec2();
-            let cursor_point = hit_position.point + point.to_vec2();
+    //     let text_node = self.text_node.unwrap();
+    //     let location = self.id.taffy_layout(text_node).unwrap_or_default().location;
+    //     self.layout_rect = size
+    //         .to_rect()
+    //         .with_origin(Point::new(location.x as f64, location.y as f64));
+    //     let offset = self.cursor().with_untracked(|c| c.offset());
+    //     let cursor_line = self.text_layout.with_untracked(|text_layout| {
+    //         let hit_position = text_layout.as_ref().unwrap().hit_position(offset);
+    //         let point = Point::new(location.x as f64, location.y as f64)
+    //             - self.text_viewport.origin().to_vec2();
+    //         let cursor_point = hit_position.point + point.to_vec2();
 
-            Line::new(
-                Point::new(
-                    cursor_point.x,
-                    cursor_point.y - hit_position.glyph_ascent,
-                ),
-                Point::new(
-                    cursor_point.x,
-                    cursor_point.y + hit_position.glyph_descent,
-                ),
-            )
-        });
-        self.cursor_line.set(cursor_line);
+    //         Line::new(
+    //             Point::new(
+    //                 cursor_point.x,
+    //                 cursor_point.y - hit_position.glyph_ascent,
+    //             ),
+    //             Point::new(
+    //                 cursor_point.x,
+    //                 cursor_point.y + hit_position.glyph_descent,
+    //             ),
+    //         )
+    //     });
+    //     self.cursor_line.set(cursor_line);
 
-        None
-    }
+    //     None
+    // }
 
-    fn event_before_children(
-        &mut self,
-        cx: &mut floem::context::EventCx,
-        event: &floem::event::Event,
-    ) -> EventPropagation {
+    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
         let text_offset = self.text_viewport.origin();
-        let event = event.clone().offset((-text_offset.x, -text_offset.y));
-        match event {
-            Event::PointerDown(pointer) => {
-                let offset = self.hit_index(cx, pointer.pos);
+        match &cx.event {
+            Event::Pointer(PointerEvent::Down(pointer)) => {
+                let pointer_pos = pointer.state.logical_position();
+                let pointer_pos = Point::new(
+                    pointer_pos.x - text_offset.x,
+                    pointer_pos.y - text_offset.y,
+                );
+
+                let (offset, affinity) = self.hit_index(pointer_pos);
                 self.cursor().update(|cursor| {
-                    cursor.set_insert(Selection::caret(offset));
+                    cursor.set_insert(Selection::caret(offset, affinity));
                 });
-                if pointer.button.is_primary() && pointer.count == 2 {
-                    let offset = self.hit_index(cx, pointer.pos);
+                if pointer.button == Some(PointerButton::Primary)
+                    && pointer.state.count == 2
+                {
+                    let (offset, affinity) = self.hit_index(pointer_pos);
                     let (start, end) = self
                         .doc()
                         .buffer
                         .with_untracked(|buffer| buffer.select_word(offset));
                     self.cursor().update(|cursor| {
-                        cursor.set_insert(Selection::region(start, end));
+                        cursor.set_insert(Selection::region(
+                            start,
+                            end,
+                            CursorAffinity::Backward,
+                        ));
                     });
-                } else if pointer.button.is_primary() && pointer.count == 3 {
+                } else if pointer.button == Some(PointerButton::Primary)
+                    && pointer.state.count == 3
+                {
                     self.cursor().update(|cursor| {
-                        cursor.set_insert(Selection::region(0, self.content.len()));
+                        cursor.set_insert(Selection::region(
+                            0,
+                            self.content.len(),
+                            CursorAffinity::Backward,
+                        ));
                     });
                 }
-                cx.update_active(self.id);
             }
-            Event::PointerMove(pointer) => {
-                if cx.is_active(self.id) {
-                    let offset = self.hit_index(cx, pointer.pos);
+            Event::Pointer(PointerEvent::Move(pointer)) => {
+                let pointer_pos = pointer.current.logical_position();
+                let pointer_pos = Point::new(
+                    pointer_pos.x - text_offset.x,
+                    pointer_pos.y - text_offset.y,
+                );
+
+                if cx.window_state.is_active(self.id) {
+                    let (offset, affinity) = self.hit_index(pointer_pos);
                     self.cursor().update(|cursor| {
-                        cursor.set_offset(offset, true, false);
+                        cursor.set_offset(offset, affinity, true, false);
                     });
                 }
             }
-            Event::PointerWheel(pointer_event) => {
-                let delta = pointer_event.delta;
+            Event::Pointer(PointerEvent::Scroll(event)) => {
+                let delta = event.resolve_to_points(None, None);
                 let delta = if delta.x == 0.0 && delta.y != 0.0 {
                     Vec2::new(delta.y, delta.x)
                 } else {
@@ -704,25 +736,35 @@ impl View for TextInput {
     }
 
     fn paint(&mut self, cx: &mut floem::context::PaintCx) {
-        cx.save();
-        cx.clip(&self.text_rect.inflate(1.0, 0.0));
-        let text_node = self.text_node.unwrap();
-        let location = self.id.taffy_layout(text_node).unwrap_or_default().location;
-        let point = Point::new(location.x as f64, location.y as f64)
-            - self.text_viewport.origin().to_vec2();
-
         self.text_layout.with_untracked(|text_layout| {
-            let text_layout = text_layout.as_ref().unwrap();
+            let Some(text_node) = self.text_node else {
+                return;
+            };
+            let Some(text_layout) = text_layout else {
+                return;
+            };
+
+            let location =
+                self.id.taffy_layout(text_node).unwrap_or_default().location;
+            let point = Point::new(location.x as f64, location.y as f64)
+                - self.text_viewport.origin().to_vec2();
+
             let height = text_layout.size().height;
             let config = self.config.get_untracked();
 
             let cursor = self.cursor().get_untracked();
 
+            cx.clip(&self.text_rect.inflate(1.0, 0.0));
+
             if let CursorMode::Insert(selection) = &cursor.mode {
                 for region in selection.regions() {
                     if !region.is_caret() {
-                        let min = text_layout.hit_position(region.min()).point.x;
-                        let max = text_layout.hit_position(region.max()).point.x;
+                        let min = text_layout
+                            .cursor_point(region.min(), Affinity::Upstream)
+                            .x;
+                        let max = text_layout
+                            .cursor_point(region.max(), Affinity::Upstream)
+                            .x;
                         cx.fill(
                             &Rect::ZERO
                                 .with_size(Size::new(max - min, height))
@@ -735,30 +777,32 @@ impl View for TextInput {
             }
 
             if !self.content.is_empty() {
-                cx.draw_text(text_layout, point);
+                text_layout.draw(cx, point);
             } else if !self.placeholder.is_empty() {
-                cx.draw_text(self.placeholder_text_layout.as_ref().unwrap(), point);
+                self.placeholder_text_layout
+                    .as_ref()
+                    .unwrap()
+                    .draw(cx, point);
             }
 
             if let Some((start, end)) = self.preedit_range {
-                let start_position = text_layout.hit_position(start);
-                let start_point = start_position.point
+                let start_position =
+                    text_layout.cursor_point(start, Affinity::Upstream);
+                let start_point = start_position
                     + self.layout_rect.origin().to_vec2()
                     - self.text_viewport.origin().to_vec2();
-                let end_position = text_layout.hit_position(end);
-                let end_point = end_position.point
-                    + self.layout_rect.origin().to_vec2()
+                let end_position = text_layout.cursor_point(end, Affinity::Upstream);
+                let end_point = end_position + self.layout_rect.origin().to_vec2()
                     - self.text_viewport.origin().to_vec2();
 
+                let glyph_descent = text_layout
+                    .line_metrics_at(0, Affinity::Upstream)
+                    .map(|m| m.descent as f64)
+                    .unwrap_or(0.0);
+
                 let line = Line::new(
-                    Point::new(
-                        start_point.x,
-                        start_point.y + start_position.glyph_descent,
-                    ),
-                    Point::new(
-                        end_point.x,
-                        end_point.y + end_position.glyph_descent,
-                    ),
+                    Point::new(start_point.x, start_point.y + glyph_descent),
+                    Point::new(end_point.x, end_point.y + glyph_descent),
                 );
                 cx.stroke(
                     &line,
@@ -768,24 +812,24 @@ impl View for TextInput {
             }
 
             if !self.hide_cursor.get_untracked()
-                && (self.focus || cx.is_focused(self.id))
+                && (self.focus || cx.window_state.is_focused(self.id))
             {
                 cx.clip(&self.text_rect.inflate(2.0, 2.0));
 
-                let hit_position = text_layout.hit_position(self.offset);
-                let cursor_point = hit_position.point
+                let hit_position =
+                    text_layout.cursor_point(self.offset, Affinity::Upstream);
+                let cursor_point = hit_position
                     + self.layout_rect.origin().to_vec2()
                     - self.text_viewport.origin().to_vec2();
 
+                let (glyph_ascent, glyph_descent) = text_layout
+                    .line_metrics_at(0, Affinity::Upstream)
+                    .map(|m| (m.ascent as f64, m.descent as f64))
+                    .unwrap_or((0.0, 0.0));
+
                 let line = Line::new(
-                    Point::new(
-                        cursor_point.x,
-                        cursor_point.y - hit_position.glyph_ascent,
-                    ),
-                    Point::new(
-                        cursor_point.x,
-                        cursor_point.y + hit_position.glyph_descent,
-                    ),
+                    Point::new(cursor_point.x, cursor_point.y - glyph_ascent),
+                    Point::new(cursor_point.x, cursor_point.y + glyph_descent),
                 );
 
                 cx.stroke(
@@ -795,7 +839,7 @@ impl View for TextInput {
                 );
             }
 
-            cx.restore();
+            cx.clear_clip();
         });
     }
 }

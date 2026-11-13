@@ -9,8 +9,8 @@ use alacritty_terminal::{
 };
 use anyhow::anyhow;
 use floem::{
-    keyboard::{Key, KeyEvent, Modifiers, NamedKey},
     reactive::{RwSignal, Scope, SignalGet, SignalUpdate, SignalWith},
+    ui_events::keyboard::{Key, KeyboardEvent as KeyEvent, Modifiers, NamedKey},
     views::editor::text::SystemClipboard,
 };
 use lapce_core::{
@@ -433,16 +433,14 @@ impl TerminalData {
             self.receive_char(command);
             true
         } else if key.modifiers == Modifiers::ALT
-            && matches!(&key.key.logical_key, Key::Character(_))
+            && let Key::Character(c) = &key.key
         {
-            if let Key::Character(c) = &key.key.logical_key {
-                // In terminal emulators, when the Alt key is combined with another character
-                // (such as Alt+a), a leading ESC (Escape, ASCII code 0x1B) character is usually
-                // sent followed by a sequence of that character. For example,
-                // Alt+a sends \x1Ba.
-                self.receive_char("\x1b");
-                self.receive_char(c.as_str());
-            }
+            // In terminal emulators, when the Alt key is combined with another character
+            // (such as Alt+a), a leading ESC (Escape, ASCII code 0x1B) character is usually
+            // sent followed by a sequence of that character. For example,
+            // Alt+a sends \x1Ba.
+            self.receive_char("\x1b");
+            self.receive_char(c);
             true
         } else {
             false
@@ -535,7 +533,7 @@ impl TerminalData {
             };
         }
 
-        match key.key.logical_key {
+        match key.key {
             Key::Character(ref c) => {
                 if key.modifiers == Modifiers::CONTROL {
                     // Convert the character into its index (into a control character).
@@ -582,7 +580,7 @@ impl TerminalData {
                 }
             }
             Key::Named(NamedKey::Backspace) => {
-                Some(if key.modifiers.control() {
+                Some(if key.modifiers.ctrl() {
                     "\x08" // backspace
                 } else if key.modifiers.alt() {
                     "\x1b\x7f"

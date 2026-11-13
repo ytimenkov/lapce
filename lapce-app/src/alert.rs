@@ -6,7 +6,7 @@ use std::{
 
 use floem::{
     View,
-    event::EventListener,
+    prelude::listener as EventListener,
     reactive::{ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate},
     style::CursorStyle,
     views::{Decorators, container, dyn_stack, label, stack, svg},
@@ -144,7 +144,7 @@ pub fn alert_box(alert_data: AlertBoxData) -> impl View {
             ))
             .style(|s| s.flex_col().items_center().width_pct(100.0))
         })
-        .on_event_stop(EventListener::PointerDown, |_| {})
+        .on_event_stop(EventListener::PointerDown, |_, _| {})
         .style(move |s| {
             let config = config.get();
             s.padding(20.0)
@@ -156,7 +156,7 @@ pub fn alert_box(alert_data: AlertBoxData) -> impl View {
                 .background(config.color(LapceColor::PANEL_BACKGROUND))
         })
     })
-    .on_event_stop(EventListener::PointerDown, move |_| {})
+    .on_event_stop(EventListener::PointerDown, move |_, _| {})
     .style(move |s| {
         s.absolute()
             .size_pct(100.0, 100.0)

@@ -2,10 +2,10 @@ use std::{path::PathBuf, rc::Rc, sync::Arc};
 
 use floem::{
     View,
-    event::EventListener,
+    prelude::listener as EventListener,
     reactive::{ReadSignal, SignalGet, SignalUpdate},
     style::{CursorStyle, Style},
-    views::{Decorators, container, label, scroll, stack, svg, virtual_stack},
+    views::{Decorators, Scroll, container, label, stack, svg, virtual_stack},
 };
 use lapce_xi_rope::find::CaseMatching;
 
@@ -88,7 +88,7 @@ pub fn global_search_panel(
                 )
                 .style(|s| s.padding_left(6.0)),
             ))
-            .on_event_cont(EventListener::PointerDown, move |_| {
+            .on_event_cont(EventListener::PointerDown, move |_, _| {
                 focus.set(Focus::Panel(PanelKind::Search));
             })
             .style(move |s| {
@@ -115,7 +115,7 @@ fn search_result(
 ) -> impl View {
     let ui_line_height = global_search_data.common.ui_line_height;
     container({
-        scroll({
+        Scroll::new({
             virtual_stack(
                 move || global_search_data.clone(),
                 move |(path, _)| path.to_owned(),
@@ -212,7 +212,7 @@ fn search_result(
                                 if expanded.get() {
                                     match_data.matches.get()
                                 } else {
-                                    im::Vector::new()
+                                    imbl::Vector::new()
                                 }
                             },
                             |m| (m.line, m.start, m.end),

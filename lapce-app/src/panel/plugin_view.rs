@@ -2,15 +2,16 @@ use std::{ops::Range, rc::Rc};
 
 use floem::{
     IntoView, View,
-    event::EventListener,
+    context::LayoutChanged,
     peniko::kurbo::{Point, Rect, Size},
+    prelude::listener as EventListener,
     reactive::{
         RwSignal, SignalGet, SignalUpdate, SignalWith, create_memo, create_rw_signal,
     },
-    style::CursorStyle,
+    style::{CursorStyle, CustomStylable},
     views::{
-        Decorators, VirtualVector, container, dyn_container, img, label,
-        scroll::scroll, stack, svg, virtual_stack,
+        Decorators, Scroll, VirtualVector, container, dyn_container, img, label,
+        scroll::ScrollChanged, stack, svg, virtual_stack,
     },
 };
 use indexmap::IndexMap;
@@ -54,7 +55,7 @@ impl<K: Clone + 'static, V: Clone + 'static> VirtualVector<(usize, K, V)>
         self.0.len()
     }
 
-    fn slice(&mut self, range: Range<usize>) -> impl Iterator<Item = (usize, K, V)> {
+    fn slice(&self, range: Range<usize>) -> impl Iterator<Item = (usize, K, V)> {
         let start = range.start;
         Box::new(
             self.items(range)
@@ -198,7 +199,7 @@ fn installed_view(plugin: PluginData) -> impl View {
     };
 
     container(
-        scroll(
+        Scroll::new(
             virtual_stack(
                 move || IndexMapItems(volts.get()),
                 move |(_, id, _)| id.clone(),
@@ -352,7 +353,7 @@ fn available_view(plugin: PluginData, core_rpc: CoreRpcHandler) -> impl View {
 
     stack((
         container({
-            scroll(
+            Scroll::new(
                 TextInputBuilder::new()
                     .is_focused(is_focused)
                     .build_editor(editor.clone())
@@ -369,10 +370,10 @@ fn available_view(plugin: PluginData, core_rpc: CoreRpcHandler) -> impl View {
                     .to_rect()
                     .with_origin(Point::new(cursor_x.get(), 0.0))
             })
-            .on_event_cont(EventListener::PointerDown, move |_| {
+            .on_event_cont(EventListener::PointerDown, move |_, _| {
                 focus.set(Focus::Panel(PanelKind::Plugin));
             })
-            .scroll_style(|s| s.hide_bars(true))
+            .custom_style(|s| s.hide_bars(true))
             .style(move |s| {
                 let config = config.get();
                 s.width_pct(100.0)
@@ -386,20 +387,23 @@ fn available_view(plugin: PluginData, core_rpc: CoreRpcHandler) -> impl View {
         })
         .style(|s| s.padding(10.0).width_pct(100.0)),
         container({
-            scroll({
+            Scroll::new({
                 virtual_stack(
                     move || IndexMapItems(volts.get()),
                     move |(_, id, _)| id.clone(),
                     view_fn,
                 )
                 .item_size_fixed(move || ui_line_height.get() * 3.0 + 10.0)
-                .on_resize(move |rect| {
-                    content_rect.set(rect);
-                })
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_, LayoutChanged { new_box, .. }| {
+                        content_rect.set(*new_box);
+                    },
+                )
                 .style(|s| s.flex_col().width_pct(100.0))
             })
-            .on_scroll(move |rect| {
-                if rect.y1 + 30.0 > content_rect.get_untracked().y1 {
+            .on_event_stop(ScrollChanged::listener(), move |_, state| {
+                if state.offset.y + 30.0 > content_rect.get_untracked().y1 {
                     plugin.load_more_available(core_rpc.clone());
                 }
             })

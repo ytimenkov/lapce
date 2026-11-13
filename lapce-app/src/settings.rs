@@ -3,9 +3,10 @@ use std::{collections::BTreeMap, rc::Rc, sync::Arc, time::Duration};
 use floem::{
     IntoView, View,
     action::{TimerToken, add_overlay, exec_after, remove_overlay},
-    event::EventListener,
-    keyboard::Modifiers,
+    context::LayoutChanged,
+    kurbo::Vec2,
     peniko::kurbo::{Point, Rect, Size},
+    prelude::{Modifiers, listener as EventListener},
     reactive::{
         Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
         create_effect, create_memo, create_rw_signal,
@@ -13,9 +14,10 @@ use floem::{
     style::CursorStyle,
     text::{Attrs, AttrsList, FamilyOwned, TextLayout},
     views::{
-        Decorators, VirtualVector, container, dyn_stack, empty, label,
-        scroll::{PropagatePointerWheel, scroll},
-        stack, svg, text, virtual_stack,
+        Decorators, Scroll, Stack, VirtualVector, container, dyn_stack, empty,
+        label,
+        scroll::{PropagatePointerWheel, ScrollChanged},
+        svg, text, virtual_stack,
     },
 };
 use indexmap::IndexMap;
@@ -84,11 +86,11 @@ struct SettingsItem {
 
 #[derive(Clone, Debug)]
 struct SettingsData {
-    items: RwSignal<im::Vector<SettingsItem>>,
-    kinds: RwSignal<im::Vector<(String, RwSignal<Point>)>>,
-    plugin_items: RwSignal<im::Vector<SettingsItem>>,
-    plugin_kinds: RwSignal<im::Vector<(String, RwSignal<Point>)>>,
-    filtered_items: RwSignal<im::Vector<SettingsItem>>,
+    items: RwSignal<imbl::Vector<SettingsItem>>,
+    kinds: RwSignal<imbl::Vector<(String, RwSignal<Point>)>>,
+    plugin_items: RwSignal<imbl::Vector<SettingsItem>>,
+    plugin_kinds: RwSignal<imbl::Vector<(String, RwSignal<Point>)>>,
+    filtered_items: RwSignal<imbl::Vector<SettingsItem>>,
     common: Rc<CommonData>,
 }
 
@@ -122,7 +124,7 @@ impl VirtualVector<SettingsItem> for SettingsData {
     }
 
     fn slice(
-        &mut self,
+        &self,
         _range: std::ops::Range<usize>,
     ) -> impl Iterator<Item = SettingsItem> {
         Box::new(self.filtered_items.get().into_iter())
@@ -145,16 +147,16 @@ impl SettingsData {
         }
 
         let config = common.config;
-        let plugin_items = cx.create_rw_signal(im::Vector::new());
-        let plugin_kinds = cx.create_rw_signal(im::Vector::new());
-        let filtered_items = cx.create_rw_signal(im::Vector::new());
-        let items = cx.create_rw_signal(im::Vector::new());
-        let kinds = cx.create_rw_signal(im::Vector::new());
+        let plugin_items = cx.create_rw_signal(imbl::Vector::new());
+        let plugin_kinds = cx.create_rw_signal(imbl::Vector::new());
+        let filtered_items = cx.create_rw_signal(imbl::Vector::new());
+        let items = cx.create_rw_signal(imbl::Vector::new());
+        let kinds = cx.create_rw_signal(imbl::Vector::new());
         cx.create_effect(move |_| {
             let config = config.get();
 
-            let mut data_items = im::Vector::new();
-            let mut data_kinds = im::Vector::new();
+            let mut data_items = imbl::Vector::new();
+            let mut data_kinds = imbl::Vector::new();
             let mut item_height_accum = 0.0;
             for (kind, fields, descs, mut settings_map) in [
                 (
@@ -240,8 +242,8 @@ impl SettingsData {
             items.set(data_items);
 
             let plugins = installed_plugin.get();
-            let mut setting_items = im::Vector::new();
-            let mut plugin_kinds_tmp = im::Vector::new();
+            let mut setting_items = imbl::Vector::new();
+            let mut plugin_kinds_tmp = imbl::Vector::new();
             for (_, volt) in plugins {
                 let meta = volt.meta.get();
                 let kind = meta.name;
@@ -352,7 +354,7 @@ pub fn settings_view(
             return;
         }
 
-        let mut filtered_items = im::Vector::new();
+        let mut filtered_items = imbl::Vector::new();
         for item in &items {
             if item.header || item.filter_text.contains(&pattern) {
                 filtered_items.push_back(item.clone());
@@ -368,7 +370,7 @@ pub fn settings_view(
 
     let ensure_visible = create_rw_signal(Rect::ZERO);
     let settings_content_size = create_rw_signal(Size::ZERO);
-    let scroll_pos = create_rw_signal(Point::ZERO);
+    let scroll_pos = create_rw_signal(Vec2::ZERO);
 
     let current_kind = {
         create_memo(move |_| {
@@ -432,14 +434,14 @@ pub fn settings_view(
     };
 
     let switcher = || {
-        stack((
+        Stack::new((
             dyn_stack(
                 move || kinds.get().clone(),
                 |(k, _)| k.clone(),
                 move |(k, pos)| switcher_item(k, Box::new(move || Some(pos)), 0.0),
             )
             .style(|s| s.flex_col().width_pct(100.0)),
-            stack((
+            Stack::new((
                 switcher_item(
                     "Plugin Settings".to_string(),
                     Box::new(move || {
@@ -471,9 +473,9 @@ pub fn settings_view(
         })
     };
 
-    stack((
+    Stack::new((
         container({
-            scroll({
+            Scroll::new({
                 container(switcher())
                     .style(|s| s.padding_vert(20.0).width_pct(100.0))
             })
@@ -485,7 +487,7 @@ pub fn settings_view(
                 .border_right(1.0)
                 .border_color(config.get().color(LapceColor::LAPCE_BORDER))
         }),
-        stack((
+        Stack::new((
             container({
                 TextInputBuilder::new()
                     .build_editor(search_editor)
@@ -503,7 +505,7 @@ pub fn settings_view(
             })
             .style(|s| s.padding_horiz(50.0).padding_vert(20.0)),
             container({
-                scroll({
+                Scroll::new({
                     dyn_stack(
                         move || filtered_items_signal.get(),
                         |item| {
@@ -528,13 +530,16 @@ pub fn settings_view(
                             .max_width(400.0)
                     })
                 })
-                .on_scroll(move |rect| {
-                    scroll_pos.set(rect.origin());
+                .on_event_stop(ScrollChanged::listener(), move |_, state| {
+                    scroll_pos.set(state.offset);
                 })
                 .ensure_visible(move || ensure_visible.get())
-                .on_resize(move |rect| {
-                    settings_content_size.set(rect.size());
-                })
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_, LayoutChanged { new_box, .. }| {
+                        settings_content_size.set(new_box.size());
+                    },
+                )
                 .style(|s| s.absolute().size_pct(100.0, 100.0))
             })
             .style(|s| s.size_pct(100.0, 100.0)),
@@ -691,7 +696,7 @@ fn settings_item_view(
         }
     };
 
-    stack((
+    Stack::new((
         label(move || item.name.clone()).style(move |s| {
             s.font_bold()
                 .text_ellipsis()
@@ -700,7 +705,7 @@ fn settings_item_view(
                 .line_height(1.8)
                 .font_size(config.get().ui.font_size() as f32 + 1.0)
         }),
-        stack((
+        Stack::new((
             label(move || item.description.clone()).style(move |s| {
                 s.min_width(0.0)
                     .max_width_pct(100.0)
@@ -729,7 +734,7 @@ fn settings_item_view(
                 });
 
                 container(
-                    stack((
+                    Stack::new((
                         checkbox(move || checked.get(), config),
                         label(|| " ".to_string()).style(|s| s.line_height(1.8)),
                     ))
@@ -752,16 +757,19 @@ fn settings_item_view(
         )),
         view().style(move |s| s.apply_if(!item.header, |s| s.margin_top(6.0))),
     ))
-    .on_resize(move |rect| {
-        if item.header {
-            item.pos.set(rect.origin());
-        }
-        let old_size = item.size.get_untracked();
-        let new_size = rect.size();
-        if old_size != new_size {
-            item.size.set(new_size);
-        }
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            if item.header {
+                item.pos.set(new_box.origin());
+            }
+            let old_size = item.size.get_untracked();
+            let new_size = new_box.size();
+            if old_size != new_size {
+                item.size.set(new_size);
+            }
+        },
+    )
     .style(|s| {
         s.flex_col()
             .padding_vert(10.0)
@@ -799,7 +807,7 @@ impl VirtualVector<(String, String)> for BTreeMapVirtualList {
     }
 
     fn slice(
-        &mut self,
+        &self,
         range: std::ops::Range<usize>,
     ) -> impl Iterator<Item = (String, String)> {
         Box::new(
@@ -831,7 +839,7 @@ fn color_section_list(
     let config = common.config;
 
     let kind = kind.to_string();
-    stack((
+    Stack::new((
         text(header).style(|s| {
             s.margin_top(10)
                 .margin_horiz(20)
@@ -945,7 +953,7 @@ fn color_section_list(
 
                 let local_kind = kind.clone();
                 let local_key = key.clone();
-                stack((
+                Stack::new((
                     text(&key).style(move |s| {
                         s.width(max_width.get()).margin_left(20).margin_right(10)
                     }),
@@ -1089,8 +1097,8 @@ pub fn theme_color_settings_view(
     let search_editor_id = search_editor.id();
     let buffer = search_editor.doc_signal().get_untracked().buffer;
 
-    scroll(
-        stack((
+    Scroll::new(
+        Stack::new((
             container({
                 TextInputBuilder::new()
                     .build_editor(search_editor)
@@ -1211,20 +1219,18 @@ fn dropdown_view(
             if expanded.get() {
                 let item = item.clone();
                 let dropdown = dropdown.clone();
-                let id = add_overlay(Point::ZERO, move |_| {
-                    dropdown_scroll(
-                        &item.clone(),
-                        current_value,
-                        &dropdown.clone(),
-                        expanded,
-                        dropdown_scroll_focus,
-                        dropdown_input_focus,
-                        window_origin,
-                        size,
-                        window_size,
-                        config,
-                    )
-                });
+                let id = add_overlay(dropdown_scroll(
+                    &item.clone(),
+                    current_value,
+                    &dropdown.clone(),
+                    expanded,
+                    dropdown_scroll_focus,
+                    dropdown_input_focus,
+                    window_origin,
+                    size,
+                    window_size,
+                    config,
+                ));
                 overlay_id.set(Some(id));
             } else if let Some(id) = overlay_id.get_untracked() {
                 remove_overlay(id);
@@ -1233,7 +1239,7 @@ fn dropdown_view(
         });
     }
 
-    stack((
+    Stack::new((
         label(move || current_value.get()).style(move |s| {
             s.text_ellipsis()
                 .width_pct(100.0)
@@ -1262,15 +1268,21 @@ fn dropdown_view(
             *expanded = !*expanded;
         });
     })
-    .on_move(move |point| {
-        window_origin.set(point);
-        if expanded.get_untracked() {
-            expanded.set(false);
-        }
-    })
-    .on_resize(move |rect| {
-        size.set(rect.size());
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_,
+              LayoutChanged {
+                  new_box,
+                  new_window_origin,
+                  ..
+              }| {
+            window_origin.set(*new_window_origin);
+            size.set(new_box.size());
+            if expanded.get_untracked() {
+                expanded.set(false);
+            }
+        },
+    )
     .style(move |s| {
         s.items_center()
             .cursor(CursorStyle::Pointer)
@@ -1281,10 +1293,10 @@ fn dropdown_view(
             .line_height(1.8)
     })
     .keyboard_navigable()
-    .on_event_stop(EventListener::FocusGained, move |_| {
+    .on_event_stop(EventListener::FocusGained, move |_, _| {
         dropdown_input_focus.set(true);
     })
-    .on_event_stop(EventListener::FocusLost, move |_| {
+    .on_event_stop(EventListener::FocusLost, move |_, _| {
         dropdown_input_focus.set(false);
         if expanded.get_untracked() && !dropdown_scroll_focus.get_untracked() {
             expanded.set(false);
@@ -1342,7 +1354,7 @@ fn dropdown_scroll(
 
     let scroll_size = create_rw_signal(Size::ZERO);
 
-    scroll({
+    Scroll::new({
         dyn_stack(move || items.clone(), |item| item.to_string(), view_fn)
             .style(|s| s.flex_col().width_pct(100.0).cursor(CursorStyle::Pointer))
     })
@@ -1353,20 +1365,23 @@ fn dropdown_scroll(
     })
     .keyboard_navigable()
     .request_focus(|| {})
-    .on_event_stop(EventListener::FocusGained, move |_| {
+    .on_event_stop(EventListener::FocusGained, move |_, _| {
         dropdown_scroll_focus.set(true);
     })
-    .on_event_stop(EventListener::FocusLost, move |_| {
+    .on_event_stop(EventListener::FocusLost, move |_, _| {
         dropdown_scroll_focus.set(false);
         if expanded.get_untracked() && !dropdown_input_focus.get_untracked() {
             expanded.set(false);
         }
     })
-    .on_event_stop(EventListener::PointerMove, move |_| {})
-    .on_event_stop(EventListener::PointerDown, move |_| {})
-    .on_resize(move |rect| {
-        scroll_size.set(rect.size());
-    })
+    .on_event_stop(EventListener::PointerMove, move |_, _| {})
+    .on_event_stop(EventListener::PointerDown, move |_, _| {})
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            scroll_size.set(new_box.size());
+        },
+    )
     .style(move |s| {
         let config = config.get();
         let window_origin = window_origin.get();

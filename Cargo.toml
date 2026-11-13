@@ -47,7 +47,7 @@ flate2            = { version = "1.0" }
 git2              = { version = "0.21.0", features = ["vendored-openssl", "vendored-libgit2"] }
 globset           = { version = "0.4.14" }
 hashbrown         = { version = "0.14.5", features = ["serde"] }
-im                = { version = "15.0.0", features = ["serde"] }
+imbl              = { version = "7.0.2", features = ["serde"] }
 include_dir       = { version = "0.7" }
 indexmap          = { version = "2.0", features = ["serde"] }
 interprocess      = { version = "1.2.1" }
@@ -63,8 +63,8 @@ reqwest           = { version = "0.11", features = ["blocking", "json", "socks"]
 serde             = { version = "1.0" }
 serde_json        = { version = "1.0" }
 smallvec          = { version = "1.15.1" }
-strum             = { version = "0.27.1" }
-strum_macros      = { version = "0.27.1" }
+strum             = { version = "0.28.0" }
+strum_macros      = { version = "0.28.0" }
 tar               = { version = "0.4" }
 tempfile          = { version = "3.10.1" }
 thiserror         = { version = "1.0" }
@@ -76,22 +76,22 @@ zstd              = { version = "0.11.2" }                                      
 lsp-types = { version = "0.95.1", features = ["proposed"] }                                                  # not following semver, so should be locked to patch version updates only
 psp-types = { git = "https://github.com/lapce/psp-types", rev = "f7fea28f59e7b2d6faa1034a21679ad49b3524ad" }
 
-lapce-xi-rope = { version = "0.3.2", features = ["serde"] }
+lapce-xi-rope = { version = "0.4", features = ["serde"] }
 
 lapce-core  = { path = "./lapce-core" }
 lapce-rpc   = { path = "./lapce-rpc" }
 lapce-proxy = { path = "./lapce-proxy" }
 
 [workspace.dependencies.floem]
-# path = "../floem"
-git = "https://github.com/lapce/floem"
-rev = "31fa8f444c37f4c314f47d88c23ffdbc25f2ab53"
-features = ["editor", "serde", "default-image-formats", "rfd-async-std"]
+path = "../floem"
+#git = "https://github.com/lapce/floem"
+#rev = "31fa8f444c37f4c314f47d88c23ffdbc25f2ab53"
+features = ["editor", "serde", "default-image-formats"]
 
 [workspace.dependencies.floem-editor-core]
-# path = "../floem/editor-core/"
-git = "https://github.com/lapce/floem"
-rev = "31fa8f444c37f4c314f47d88c23ffdbc25f2ab53"
+path = "../floem/editor-core/"
+#git = "https://github.com/lapce/floem"
+#rev = "31fa8f444c37f4c314f47d88c23ffdbc25f2ab53"
 features = ["serde"]
 
 [patch.crates-io]
@@ -99,9 +99,9 @@ features = ["serde"]
 lsp-types = { git = "https://github.com/lapce/lsp-types", rev = "feaa1e2ec80975c9dadd400a238ceacf071058e6" }
 regalloc2 = { rev = "5d79e12d0a93b10fc181f4da409b4671dd365228", git = "https://github.com/bytecodealliance/regalloc2" }
 
-# cargo vendor issue: https://github.com/rust-lang/cargo/issues/10310
-# dpi comes from winit (source) and muda (crate)
-dpi = { git = "https://github.com/rust-windowing/winit", rev = "ee245c569d65fdeacf705ee5eedb564508d10ebe" }
+# # cargo vendor issue: https://github.com/rust-lang/cargo/issues/10310
+# # dpi comes from winit (source) and muda (crate)
+# dpi = { git = "https://github.com/rust-windowing/winit", rev = "ee245c569d65fdeacf705ee5eedb564508d10ebe" }
 
 
 [workspace.dependencies.tracing]

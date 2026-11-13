@@ -3,16 +3,20 @@ use std::{path::PathBuf, rc::Rc};
 use floem::{
     View,
     action::show_context_menu,
-    event::{Event, EventListener},
-    menu::{Menu, MenuItem},
+    context::LayoutChanged,
+    event::Event,
+    menu::Menu,
     peniko::kurbo::Rect,
-    prelude::SignalTrack,
+    prelude::{SignalTrack, listener as EventListener},
     reactive::{SignalGet, SignalUpdate, SignalWith, create_memo, create_rw_signal},
     style::{CursorStyle, Style},
+    ui_events::pointer::PointerButton,
     views::{
-        Decorators, container, dyn_stack,
+        Decorators, Scroll, container, dyn_stack,
         editor::view::{LineRegion, cursor_caret},
-        label, scroll, stack, svg, text,
+        label,
+        scroll::ScrollChanged,
+        stack, svg, text,
     },
 };
 use lapce_core::buffer::rope_text::RopeText;
@@ -61,7 +65,7 @@ pub fn source_control_panel(
     stack((
         stack((
             container({
-                scroll({
+                Scroll::new({
                     let view = stack((
                         editor_view(
                             editor.get_untracked(),
@@ -86,34 +90,37 @@ pub fn source_control_panel(
                             .hover(|s| s.cursor(CursorStyle::Text))
                     });
                     let id = view.id();
-                    view.on_event_cont(EventListener::PointerDown, move |event| {
-                        let event = event.clone().offset((10.0, 6.0));
-                        if let Event::PointerDown(pointer_event) = event {
-                            id.request_active();
-                            editor.get_untracked().pointer_down(&pointer_event);
-                        }
-                    })
-                    .on_event_stop(EventListener::PointerMove, move |event| {
-                        let event = event.clone().offset((10.0, 6.0));
-                        if let Event::PointerMove(pointer_event) = event {
-                            editor.get_untracked().pointer_move(&pointer_event);
-                        }
+                    view.on_event_cont(
+                        EventListener::PointerDown,
+                        move |_, event| {
+                            // This is padding. Check if clicks correctly.
+                            // let event = event.clone().offset((10.0, 6.0));
+                            editor.get_untracked().pointer_down(event);
+                        },
+                    )
+                    .on_event_stop(EventListener::PointerMove, move |_, event| {
+                        // let event = event.clone().offset((10.0, 6.0));
+                        editor.get_untracked().pointer_move(event);
                     })
                     .on_event_stop(
                         EventListener::PointerUp,
-                        move |event| {
-                            let event = event.clone().offset((10.0, 6.0));
-                            if let Event::PointerUp(pointer_event) = event {
-                                editor.get_untracked().pointer_up(&pointer_event);
-                            }
+                        move |_, event| {
+                            // let event = event.clone().offset((10.0, 6.0));
+                            editor.get_untracked().pointer_up(event);
                         },
                     )
                 })
-                .on_move(move |pos| {
-                    window_origin.set(pos + (10.0, 6.0));
-                })
-                .on_scroll(move |rect| {
-                    viewport.set(rect);
+                .on_event_stop(
+                    LayoutChanged::listener(),
+                    move |_,
+                          LayoutChanged {
+                              new_window_origin, ..
+                          }| {
+                        window_origin.set(*new_window_origin + (10.0, 6.0));
+                    },
+                )
+                .on_event_stop(ScrollChanged::listener(), move |_, state| {
+                    viewport.update(|viewport| *viewport = *viewport + state.offset);
                 })
                 .ensure_visible(move || {
                     let cursor = cursor.get();
@@ -125,7 +132,7 @@ pub fn source_control_panel(
                         &e_data.editor,
                         offset,
                         !cursor.is_insert(),
-                        cursor.affinity,
+                        cursor.affinity(),
                     );
                     let config = config.get_untracked();
                     let line_height = config.editor.line_height();
@@ -188,7 +195,7 @@ pub fn source_control_panel(
         )
         .style(|s| s.flex_col().size_pct(100.0, 100.0)),
     ))
-    .on_event_stop(EventListener::PointerDown, move |_| {
+    .on_event_stop(EventListener::PointerDown, move |_, _| {
         if focus.get_untracked() != Focus::Panel(PanelKind::SourceControl) {
             focus.set(Focus::Panel(PanelKind::SourceControl));
         }
@@ -310,7 +317,7 @@ fn file_diffs_view(source_control: SourceControlData) -> impl View {
                 path: path_for_click.clone(),
             });
         })
-        .on_event_cont(EventListener::PointerDown, move |event| {
+        .on_event_cont(EventListener::PointerDown, move |_, event| {
             let diff_for_menu = diff_for_menu.clone();
 
             let discard = move || {
@@ -322,12 +329,13 @@ fn file_diffs_view(source_control: SourceControlData) -> impl View {
                 });
             };
 
-            if let Event::PointerDown(pointer_event) = event {
-                if pointer_event.button.is_secondary() {
-                    let menu = Menu::new("")
-                        .entry(MenuItem::new("Discard Changes").action(discard));
-                    show_context_menu(menu, None);
-                }
+            if event
+                .button
+                .is_some_and(|button| button == PointerButton::Secondary)
+            {
+                let menu =
+                    Menu::new().item("Discard Changes", |i| i.action(discard));
+                show_context_menu(menu, None);
             }
         })
         .style(move |s| {
@@ -345,7 +353,7 @@ fn file_diffs_view(source_control: SourceControlData) -> impl View {
     };
 
     container({
-        scroll({
+        Scroll::new({
             dyn_stack(
                 move || file_diffs.get(),
                 |(path, (diff, checked))| {
@@ -357,8 +365,11 @@ fn file_diffs_view(source_control: SourceControlData) -> impl View {
         })
         .style(|s| s.absolute().size_pct(100.0, 100.0))
     })
-    .on_resize(move |rect| {
-        panel_rect.set(rect);
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            panel_rect.set(*new_box);
+        },
+    )
     .style(|s| s.size_pct(100.0, 100.0))
 }

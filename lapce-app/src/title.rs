@@ -2,9 +2,10 @@ use std::{rc::Rc, sync::Arc};
 
 use floem::{
     View,
-    event::EventListener,
-    menu::{Menu, MenuItem},
+    context::LayoutChanged,
+    menu::Menu,
     peniko::Color,
+    prelude::listener as EventListener,
     reactive::{
         Memo, ReadSignal, RwSignal, SignalGet, SignalUpdate, SignalWith, create_memo,
     },
@@ -84,32 +85,32 @@ fn left(
             || "Connect to Remote",
         )
         .popout_menu(move || {
-            #[allow(unused_mut)]
-            let mut menu = Menu::new("").entry(
-                MenuItem::new("Connect to SSH Host").action(move || {
+            // #[allow(unused_mut)]
+            let mut menu = Menu::new().item("Connect to SSH Host", move |i| {
+                i.action(move || {
                     workbench_command.send(LapceWorkbenchCommand::ConnectSshHost);
-                }),
-            );
+                })
+            });
             if !is_local
                 && proxy_status.get().is_some_and(|p| {
                     matches!(p, ProxyStatus::Connecting | ProxyStatus::Connected)
                 })
             {
-                menu = menu.entry(MenuItem::new("Disconnect remote").action(
-                    move || {
+                menu = menu.item("Disconnect remote", move |i| {
+                    i.action(move || {
                         workbench_command
                             .send(LapceWorkbenchCommand::DisconnectRemote);
-                    },
-                ));
+                    })
+                });
             }
             #[cfg(windows)]
             {
-                menu = menu.entry(MenuItem::new("Connect to WSL Host").action(
-                    move || {
+                menu = menu.item("Connect to WSL Host", move |i| {
+                    i.action(move || {
                         workbench_command
                             .send(LapceWorkbenchCommand::ConnectWslHost);
-                    },
-                ));
+                    })
+                });
             }
             menu
         })
@@ -208,13 +209,18 @@ fn middle(
             config,
         )
         .popout_menu(move || {
-            Menu::new("")
-                .entry(MenuItem::new("Open Folder").action(move || {
-                    workbench_command.send(LapceWorkbenchCommand::OpenFolder);
-                }))
-                .entry(MenuItem::new("Open Recent Workspace").action(move || {
-                    workbench_command.send(LapceWorkbenchCommand::PaletteWorkspace);
-                }))
+            Menu::new()
+                .item("Open Folder", move |i| {
+                    i.action(move || {
+                        workbench_command.send(LapceWorkbenchCommand::OpenFolder);
+                    })
+                })
+                .item("Open Recent Workspace", move |i| {
+                    i.action(move || {
+                        workbench_command
+                            .send(LapceWorkbenchCommand::PaletteWorkspace);
+                    })
+                })
         })
     };
 
@@ -228,7 +234,7 @@ fn middle(
         .style(|s| {
             s.flex_basis(0)
                 .flex_grow(1.0f32)
-                .justify_content(Some(JustifyContent::FlexEnd))
+                .justify_content(JustifyContent::FlexEnd)
         }),
         container(
             stack((
@@ -250,9 +256,9 @@ fn middle(
                 .style(|s| s.padding_left(10).padding_right(5).selectable(false)),
                 open_folder(),
             ))
-            .style(|s| s.align_items(Some(AlignItems::Center))),
+            .style(|s| s.align_items(AlignItems::Center)),
         )
-        .on_event_stop(EventListener::PointerDown, |_| {})
+        .on_event_stop(EventListener::PointerDown, |_, _| {})
         .on_click_stop(move |_| {
             if workspace.clone().path.is_some() {
                 workbench_command.send(LapceWorkbenchCommand::PaletteHelpAndFile);
@@ -267,8 +273,8 @@ fn middle(
                 .min_width(200.0)
                 .max_width(500.0)
                 .height(26.0)
-                .justify_content(Some(JustifyContent::Center))
-                .align_items(Some(AlignItems::Center))
+                .justify_content(JustifyContent::Center)
+                .align_items(AlignItems::Center)
                 .border(1.0)
                 .border_color(config.color(LapceColor::LAPCE_BORDER))
                 .border_radius(6.0)
@@ -292,14 +298,14 @@ fn middle(
         .style(move |s| {
             s.flex_basis(0)
                 .flex_grow(1.0f32)
-                .justify_content(Some(JustifyContent::FlexStart))
+                .justify_content(JustifyContent::FlexStart)
         }),
     ))
     .style(|s| {
         s.flex_basis(0)
             .flex_grow(2.0f32)
-            .align_items(Some(AlignItems::Center))
-            .justify_content(Some(JustifyContent::Center))
+            .align_items(AlignItems::Center)
+            .justify_content(JustifyContent::Center)
     })
     .debug_name("Middle of Top Bar")
 }
@@ -340,46 +346,60 @@ fn right(
                 config,
             )
             .popout_menu(move || {
-                Menu::new("")
-                    .entry(MenuItem::new("Command Palette").action(move || {
-                        workbench_command.send(LapceWorkbenchCommand::PaletteCommand)
-                    }))
-                    .separator()
-                    .entry(MenuItem::new("Open Settings").action(move || {
-                        workbench_command.send(LapceWorkbenchCommand::OpenSettings)
-                    }))
-                    .entry(MenuItem::new("Open Keyboard Shortcuts").action(
-                        move || {
+                let mut menu = Menu::new()
+                    .item("Command Palette", move |i| {
+                        i.action(move || {
                             workbench_command
-                                .send(LapceWorkbenchCommand::OpenKeyboardShortcuts)
-                        },
-                    ))
-                    .entry(MenuItem::new("Open Theme Color Settings").action(
-                        move || {
-                            workbench_command
-                                .send(LapceWorkbenchCommand::OpenThemeColorSettings)
-                        },
-                    ))
-                    .separator()
-                    .entry(if let Some(v) = latest_version.get_untracked() {
-                        if update_in_progress.get_untracked() {
-                            MenuItem::new(format!("Update in progress ({v})"))
-                                .enabled(false)
-                        } else {
-                            MenuItem::new(format!("Restart to update ({v})")).action(
-                                move || {
-                                    workbench_command
-                                        .send(LapceWorkbenchCommand::RestartToUpdate)
-                                },
-                            )
-                        }
-                    } else {
-                        MenuItem::new("No update available").enabled(false)
+                                .send(LapceWorkbenchCommand::PaletteCommand)
+                        })
                     })
                     .separator()
-                    .entry(MenuItem::new("About Lapce").action(move || {
+                    .item("Open Settings", move |i| {
+                        i.action(move || {
+                            workbench_command
+                                .send(LapceWorkbenchCommand::OpenSettings)
+                        })
+                    })
+                    .item("Open Keyboard Shortcuts", move |i| {
+                        i.action(move || {
+                            workbench_command
+                                .send(LapceWorkbenchCommand::OpenKeyboardShortcuts)
+                        })
+                    })
+                    .item("Open Theme Color Settings", move |i| {
+                        i.action(move || {
+                            workbench_command
+                                .send(LapceWorkbenchCommand::OpenThemeColorSettings)
+                        })
+                    })
+                    .separator();
+
+                if let Some(v) = latest_version.get_untracked() {
+                    if update_in_progress.get_untracked() {
+                        menu = menu
+                            .item(format!("Update in progress ({v})"), move |i| {
+                                i.enabled(false)
+                            });
+                    } else {
+                        menu = menu.item(
+                            format!("Restart to update ({v})"),
+                            move |i| {
+                                i.action(move || {
+                                    workbench_command
+                                        .send(LapceWorkbenchCommand::RestartToUpdate)
+                                })
+                            },
+                        );
+                    }
+                } else {
+                    menu =
+                        menu.item("No update available", move |i| i.enabled(false));
+                }
+                menu.separator().item("About Lapce", move |i| {
+                    i.action(move || {
                         workbench_command.send(LapceWorkbenchCommand::ShowAbout)
-                    }))
+                    })
+                })
             }),
             container(label(|| "1".to_string()).style(move |s| {
                 let config = config.get();
@@ -412,7 +432,7 @@ fn right(
     .style(|s| {
         s.flex_basis(0)
             .flex_grow(1.0f32)
-            .justify_content(Some(JustifyContent::FlexEnd))
+            .justify_content(JustifyContent::FlexEnd)
     })
     .debug_name("Right of top bar")
 }
@@ -454,12 +474,15 @@ pub fn title(window_tab_data: Rc<WindowTabData>) -> impl View {
             config,
         ),
     ))
-    .on_resize(move |rect| {
-        let height = rect.height();
-        if height != title_height.get_untracked() {
-            title_height.set(height);
-        }
-    })
+    .on_event_stop(
+        LayoutChanged::listener(),
+        move |_, LayoutChanged { new_box, .. }| {
+            let height = new_box.height();
+            if height != title_height.get_untracked() {
+                title_height.set(height);
+            }
+        },
+    )
     .style(move |s| {
         let config = config.get();
         s.width_pct(100.0)

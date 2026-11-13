@@ -6,7 +6,7 @@ use floem::{
     reactive::{RwSignal, Scope, SignalGet, SignalUpdate, SignalWith},
     style::CursorStyle,
     views::{
-        Decorators, VirtualVector, container, editor::id::Id, label, scroll, stack,
+        Decorators, Scroll, VirtualVector, container, editor::id::Id, label, stack,
         svg, virtual_stack,
     },
 };
@@ -178,7 +178,7 @@ impl
     }
 
     fn slice(
-        &mut self,
+        &self,
         range: std::ops::Range<usize>,
     ) -> impl Iterator<
         Item = (
@@ -205,7 +205,7 @@ pub fn symbol_panel(
 ) -> impl View {
     let config = window_tab_data.common.config;
     let ui_line_height = window_tab_data.common.ui_line_height;
-    scroll(
+    Scroll::new(
         virtual_stack(
             {
                 let window_tab_data = window_tab_data.clone();

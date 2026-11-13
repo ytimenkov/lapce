@@ -1,5 +1,6 @@
 use floem::text::{
-    Attrs, AttrsList, FamilyOwned, LineHeightValue, Style, TextLayout, Weight,
+    Attrs, AttrsList, FamilyOwned, FontStyle, FontWeight, LineHeightValue,
+    TextLayout,
 };
 use lapce_core::{language::LapceLanguage, syntax::Syntax};
 use lapce_xi_rope::Rope;
@@ -227,17 +228,17 @@ fn attribute_for_tag<'a>(
             Some(
                 default_attrs
                     .font_size(font_size as f32)
-                    .weight(Weight::BOLD),
+                    .weight(FontWeight::BOLD),
             )
         }
         Tag::BlockQuote(_block_quote) => Some(
             default_attrs
-                .style(Style::Italic)
+                .font_style(FontStyle::Italic)
                 .color(config.color(LapceColor::MARKDOWN_BLOCKQUOTE)),
         ),
         Tag::CodeBlock(_) => Some(default_attrs.family(code_font_family)),
-        Tag::Emphasis => Some(default_attrs.style(Style::Italic)),
-        Tag::Strong => Some(default_attrs.weight(Weight::BOLD)),
+        Tag::Emphasis => Some(default_attrs.font_style(FontStyle::Italic)),
+        Tag::Strong => Some(default_attrs.weight(FontWeight::BOLD)),
         // TODO: Strikethrough support
         Tag::Link {
             link_type: _,

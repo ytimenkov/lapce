@@ -70,7 +70,7 @@ pub struct WindowData {
     pub scope: Scope,
     /// The set of tabs within the window. These tabs are high-level
     /// constructs for workspaces, in particular they are not **editor tabs**.
-    pub window_tabs: RwSignal<im::Vector<(RwSignal<usize>, Rc<WindowTabData>)>>,
+    pub window_tabs: RwSignal<imbl::Vector<(RwSignal<usize>, Rc<WindowTabData>)>>,
     pub num_window_tabs: Memo<usize>,
     /// The index of the active window tab.
     pub active: RwSignal<usize>,
@@ -93,13 +93,15 @@ impl WindowData {
         extra_plugin_paths: Arc<Vec<PathBuf>>,
         app_command: Listener<AppCommand>,
     ) -> Self {
-        let cx = Scope::new();
+        // let cx = Scope::new();
+        let cx = Scope::current().create_child();
+
         let config =
             LapceConfig::load(&LapceWorkspace::default(), &[], &extra_plugin_paths);
         let config = cx.create_rw_signal(Arc::new(config));
         let root_view_id = cx.create_rw_signal(ViewId::new());
 
-        let window_tabs = cx.create_rw_signal(im::Vector::new());
+        let window_tabs = cx.create_rw_signal(imbl::Vector::new());
         let num_window_tabs =
             cx.create_memo(move |_| window_tabs.with(|tabs| tabs.len()));
         let active = info.tabs.active_tab;
