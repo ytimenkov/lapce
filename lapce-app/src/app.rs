@@ -619,6 +619,14 @@ impl AppData {
         view.window_scale(move || window_scale.get())
             .keyboard_navigable()
             .on_event_stop(EventListener::KeyDown, move |cx, key_event| {
+                if key_event.key
+                    == floem::ui_events::keyboard::Key::Named(
+                        floem::ui_events::keyboard::NamedKey::F12,
+                    )
+                {
+                    floem::action::inspect();
+                    return;
+                }
                 if key_down_window_data.key_down(key_event) {
                     view_id.request_focus();
                 }
