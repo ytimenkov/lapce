@@ -1,54 +1,50 @@
-use std::{collections::BTreeMap, rc::Rc, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 
 use floem::{
     IntoView, View,
-    action::{TimerToken, add_overlay, exec_after, remove_overlay},
+    action::{add_overlay, debounce_action, remove_overlay},
     context::LayoutChanged,
+    event::listener as EventListener,
     kurbo::Vec2,
     peniko::kurbo::{Point, Rect, Size},
-    prelude::{Modifiers, listener as EventListener},
     reactive::{
-        Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
-        create_effect, create_memo, create_rw_signal,
+        Effect, Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalRead,
+        SignalUpdate, SignalWith,
     },
     style::CursorStyle,
     text::{Attrs, AttrsList, FamilyOwned, TextLayout},
+    unit::DurationUnitExt,
     views::{
-        Decorators, Scroll, Stack, VirtualVector, container, dyn_stack, empty,
-        label,
+        Container, Decorators, Empty, Label, Scroll, Stack, TextInput,
+        VirtualVector, dyn_stack,
         scroll::{PropagatePointerWheel, ScrollChanged},
-        svg, text, virtual_stack,
+        svg, virtual_stack,
     },
 };
 use indexmap::IndexMap;
 use inflector::Inflector;
-use lapce_core::{buffer::rope_text::RopeText, mode::Mode};
 use lapce_rpc::plugin::VoltID;
-use lapce_xi_rope::Rope;
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::{
-    command::CommandExecuted,
     config::{
-        DropdownInfo, LapceConfig, color::LapceColor, core::CoreConfig,
+        DropdownInfo, LapceConfig, color::LapceColor,
+        color_theme::resolve_text_input_style, core::CoreConfig,
         editor::EditorConfig, icon::LapceIcons, terminal::TerminalConfig,
         ui::UIConfig,
     },
-    keypress::KeyPressFocus,
-    main_split::Editors,
     plugin::InstalledVoltData,
-    text_input::TextInputBuilder,
     window_tab::CommonData,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SettingsValue {
     Float(f64),
     Integer(i64),
     String(String),
     Bool(bool),
     Dropdown(DropdownInfo),
+    #[default]
     Empty,
 }
 
@@ -69,7 +65,7 @@ impl From<serde_json::Value> for SettingsValue {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct SettingsItem {
     kind: String,
     name: String,
@@ -77,7 +73,8 @@ struct SettingsItem {
     description: String,
     filter_text: String,
     value: SettingsValue,
-    serde_value: Value,
+    // TODO: Why using serde_json if values are stored in toml?..
+    serde_value: serde_json::Value,
     pos: RwSignal<Point>,
     size: RwSignal<Size>,
     // this is only the header that give an visual separation between different type of settings
@@ -92,43 +89,6 @@ struct SettingsData {
     plugin_kinds: RwSignal<imbl::Vector<(String, RwSignal<Point>)>>,
     filtered_items: RwSignal<imbl::Vector<SettingsItem>>,
     common: Rc<CommonData>,
-}
-
-impl KeyPressFocus for SettingsData {
-    fn get_mode(&self) -> lapce_core::mode::Mode {
-        Mode::Insert
-    }
-
-    fn check_condition(
-        &self,
-        _condition: crate::keypress::condition::Condition,
-    ) -> bool {
-        false
-    }
-
-    fn run_command(
-        &self,
-        _command: &crate::command::LapceCommand,
-        _count: Option<usize>,
-        _mods: Modifiers,
-    ) -> crate::command::CommandExecuted {
-        CommandExecuted::No
-    }
-
-    fn receive_char(&self, _c: &str) {}
-}
-
-impl VirtualVector<SettingsItem> for SettingsData {
-    fn total_len(&self) -> usize {
-        self.filtered_items.get_untracked().len()
-    }
-
-    fn slice(
-        &self,
-        _range: std::ops::Range<usize>,
-    ) -> impl Iterator<Item = SettingsItem> {
-        Box::new(self.filtered_items.get().into_iter())
-    }
 }
 
 impl SettingsData {
@@ -187,15 +147,9 @@ impl SettingsData {
                 let pos = cx.create_rw_signal(Point::new(0.0, item_height_accum));
                 data_items.push_back(SettingsItem {
                     kind: kind.to_string(),
-                    name: "".to_string(),
-                    field: "".to_string(),
-                    filter_text: "".to_string(),
-                    description: "".to_string(),
-                    value: SettingsValue::Empty,
-                    serde_value: Value::Null,
                     pos,
-                    size: cx.create_rw_signal(Size::ZERO),
                     header: true,
+                    ..Default::default()
                 });
                 data_kinds.push_back((kind.to_string(), pos));
                 for (name, desc) in fields.iter().zip(descs.iter()) {
@@ -207,7 +161,7 @@ impl SettingsData {
                         let index = dropdown.active_index;
                         (
                             SettingsValue::Dropdown(dropdown),
-                            Value::Number(index.into()),
+                            serde_json::Value::Number(index.into()),
                         )
                     } else {
                         let value = settings_map.remove(&field).unwrap();
@@ -253,15 +207,9 @@ impl SettingsData {
                         cx.create_rw_signal(Point::new(0.0, item_height_accum));
                     setting_items.push_back(SettingsItem {
                         kind: meta.display_name.clone(),
-                        name: "".to_string(),
-                        field: "".to_string(),
-                        filter_text: "".to_string(),
-                        description: "".to_string(),
-                        value: SettingsValue::Empty,
-                        serde_value: Value::Null,
                         pos,
-                        size: cx.create_rw_signal(Size::ZERO),
                         header: true,
+                        ..Default::default()
                     });
                     plugin_kinds_tmp.push_back((meta.display_name.clone(), pos));
 
@@ -295,16 +243,13 @@ impl SettingsData {
                                 filter_text,
                                 description: desc.to_string(),
                                 value,
-                                pos: cx.create_rw_signal(Point::ZERO),
-                                size: cx.create_rw_signal(Size::ZERO),
-                                serde_value: Value::Null,
-                                header: false,
+                                ..Default::default()
                             };
                             local_items.push(item);
                             item_height_accum += 50.0;
                         }
                         local_items.sort_by_key(|i| i.name.clone());
-                        setting_items.extend(local_items.into_iter());
+                        setting_items.extend(local_items);
                     }
                 }
             }
@@ -326,7 +271,6 @@ impl SettingsData {
 
 pub fn settings_view(
     installed_plugins: RwSignal<IndexMap<VoltID, InstalledVoltData>>,
-    editors: Editors,
     common: Rc<CommonData>,
 ) -> impl View {
     let config = common.config;
@@ -336,18 +280,17 @@ pub fn settings_view(
     let view_settings_data = settings_data.clone();
     let plugin_kinds = settings_data.plugin_kinds;
 
-    let search_editor = editors.make_local(cx, common);
-    let search_editor_id = search_editor.id();
-    let doc = search_editor.doc_signal();
+    let filter_pattern: RwSignal<String> = Default::default();
 
     let items = settings_data.items;
     let kinds = settings_data.kinds;
+
+    // TODO: This should be Memo.
     let filtered_items_signal = settings_data.filtered_items;
-    create_effect(move |_| {
-        let doc = doc.get();
-        let pattern = doc.buffer.with(|b| b.to_string().to_lowercase());
+    Effect::new(move |_| {
         let plugin_items = settings_data.plugin_items.get();
         let mut items = items.get();
+        let pattern = filter_pattern.get();
         if pattern.is_empty() {
             items.extend(plugin_items);
             filtered_items_signal.set(items);
@@ -368,12 +311,12 @@ pub fn settings_view(
         filtered_items_signal.set(filtered_items);
     });
 
-    let ensure_visible = create_rw_signal(Rect::ZERO);
-    let settings_content_size = create_rw_signal(Size::ZERO);
-    let scroll_pos = create_rw_signal(Vec2::ZERO);
+    let ensure_visible = RwSignal::new(Rect::ZERO);
+    let settings_content_size = RwSignal::new(Size::ZERO);
+    let scroll_pos = RwSignal::new(Vec2::ZERO);
 
     let current_kind = {
-        create_memo(move |_| {
+        Memo::new(move |_| {
             let scroll_pos = scroll_pos.get();
             let scroll_y = scroll_pos.y + 30.0;
 
@@ -399,11 +342,11 @@ pub fn settings_view(
                               pos: Box<dyn Fn() -> Option<RwSignal<Point>>>,
                               margin: f32| {
         let kind = k.clone();
-        container(
-            label(move || k.clone())
+        Container::new(
+            Label::new(k.clone())
                 .style(move |s| s.text_ellipsis().padding_left(margin)),
         )
-        .on_click_stop(move |_| {
+        .on_event_stop(EventListener::Click, move |_, _| {
             if let Some(pos) = pos() {
                 ensure_visible.set(
                     settings_content_size
@@ -474,9 +417,9 @@ pub fn settings_view(
     };
 
     Stack::new((
-        container({
+        Container::new({
             Scroll::new({
-                container(switcher())
+                Container::new(switcher())
                     .style(|s| s.padding_vert(20.0).width_pct(100.0))
             })
             .style(|s| s.absolute().size_pct(100.0, 100.0))
@@ -488,23 +431,18 @@ pub fn settings_view(
                 .border_color(config.get().color(LapceColor::LAPCE_BORDER))
         }),
         Stack::new((
-            container({
-                TextInputBuilder::new()
-                    .build_editor(search_editor)
-                    .placeholder(|| "Search Settings".to_string())
-                    .keyboard_navigable()
-                    .style(move |s| {
-                        s.width_pct(100.0)
-                            .border_radius(6.0)
-                            .border(1.0)
-                            .border_color(
-                                config.get().color(LapceColor::LAPCE_BORDER),
-                            )
+            Container::new({
+                TextInput::new(filter_pattern)
+                    .placeholder("Search Settings")
+                    .style(move |_| {
+                        resolve_text_input_style(config.get())
+                            .width_pct(100.0)
+                            .keyboard_navigable()
                     })
                     .request_focus(|| {})
             })
             .style(|s| s.padding_horiz(50.0).padding_vert(20.0)),
-            container({
+            Container::new({
                 Scroll::new({
                     dyn_stack(
                         move || filtered_items_signal.get(),
@@ -516,11 +454,7 @@ pub fn settings_view(
                             )
                         },
                         move |item| {
-                            settings_item_view(
-                                editors,
-                                view_settings_data.clone(),
-                                item,
-                            )
+                            settings_item_view(view_settings_data.clone(), item)
                         },
                     )
                     .style(|s| {
@@ -548,13 +482,9 @@ pub fn settings_view(
     ))
     .style(|s| s.absolute().size_pct(100.0, 100.0))
     .debug_name("Settings")
-    .on_cleanup(move || {
-        editors.remove(search_editor_id);
-    })
 }
 
 fn settings_item_view(
-    editors: Editors,
     settings_data: SettingsData,
     item: SettingsItem,
 ) -> impl View + use<> {
@@ -566,138 +496,96 @@ fn settings_item_view(
         None
     };
 
-    let timer = create_rw_signal(TimerToken::INVALID);
-
-    let editor_value = match &item.value {
-        SettingsValue::Float(n) => Some(n.to_string()),
-        SettingsValue::Integer(n) => Some(n.to_string()),
-        SettingsValue::String(s) => Some(s.to_string()),
+    let text_value = match &item.value {
+        SettingsValue::Float(n) => Some(RwSignal::new(n.to_string())),
+        SettingsValue::Integer(n) => Some(RwSignal::new(n.to_string())),
+        SettingsValue::String(s) => Some(RwSignal::new(s.to_string())),
         SettingsValue::Bool(_) => None,
         SettingsValue::Dropdown(_) => None,
         SettingsValue::Empty => None,
     };
 
     let view = {
-        let item = item.clone();
-        move || {
-            let cx = Scope::current();
-            if let Some(editor_value) = editor_value {
-                let text_input_view = TextInputBuilder::new()
-                    .value(editor_value)
-                    .build(cx, editors, settings_data.common);
-
-                let doc = text_input_view.doc_signal();
-
+        if let Some(text_value) = text_value {
+            debounce_action(text_value, 500.millis(), {
+                // TODO: item_value is needed only for conversion to know the type, we don't need to capture actual value
+                // which is stored in the enum variant(especially string).
+                let item_value = item.serde_value;
                 let kind = item.kind.clone();
                 let field = item.field.clone();
-                let item_value = item.value.clone();
-                create_effect(move |last| {
-                    let doc = doc.get_untracked();
-                    let rev = doc.buffer.with(|b| b.rev());
-                    if last.is_none() {
-                        return rev;
+
+                // FIXME: Figure out how to block certain keys in inputs and not hate myself
+                // NOTE: ^^ This comment was before. What could be done is to add an associated text signal
+                // - validation error which is bound to label which shown only when non-empty label (maybe via dyn_contaier)
+                // This function should just set parse error.
+                // Or validation can run on each change immediately and produce Value, then Value should be debounced.
+                move || {
+                    let value: Option<toml_edit::Value> = match &item_value {
+                        serde_json::Value::Number(n) if n.is_f64() => text_value
+                            .read()
+                            .trim()
+                            .parse::<f64>()
+                            .map(Into::into)
+                            .ok(),
+                        serde_json::Value::Number(_) => text_value
+                            .read()
+                            .trim()
+                            .parse::<i64>()
+                            .map(Into::into)
+                            .ok(),
+                        _ => Some(text_value.get().into()),
+                    };
+
+                    if let Some(value) = value {
+                        LapceConfig::update_file(&kind, &field, value);
                     }
-                    if last == Some(rev) {
-                        return rev;
-                    }
-                    let kind = kind.clone();
-                    let field = field.clone();
-                    let buffer = doc.buffer;
-                    let item_value = item_value.clone();
-                    let token =
-                        exec_after(Duration::from_millis(500), move |token| {
-                            let Some(timer) = timer.try_get_untracked() else {
-                                return;
-                            };
-                            if timer != token {
-                                return;
-                            }
-
-                            let value = buffer.with_untracked(|b| b.to_string());
-                            // FIXME: Figure out how to block certain keys in inputs and not hate myself
-                            let value = value.trim();
-                            let value = match &item_value {
-                                SettingsValue::Float(_) => {
-                                    value.parse::<f64>().ok().and_then(|v| {
-                                        serde::Serialize::serialize(
-                                            &v,
-                                            toml_edit::ser::ValueSerializer::new(),
-                                        )
-                                        .ok()
-                                    })
-                                }
-                                SettingsValue::Integer(_) => {
-                                    value.parse::<i64>().ok().and_then(|v| {
-                                        serde::Serialize::serialize(
-                                            &v,
-                                            toml_edit::ser::ValueSerializer::new(),
-                                        )
-                                        .ok()
-                                    })
-                                }
-                                _ => serde::Serialize::serialize(
-                                    &value,
-                                    toml_edit::ser::ValueSerializer::new(),
-                                )
-                                .ok(),
-                            };
-
-                            if let Some(value) = value {
-                                LapceConfig::update_file(&kind, &field, value);
-                            }
-                        });
-                    timer.set(token);
-
-                    rev
-                });
-
-                text_input_view
-                    .keyboard_navigable()
-                    .style(move |s| {
-                        s.width(300.0).border(1.0).border_radius(6.0).border_color(
-                            config.get().color(LapceColor::LAPCE_BORDER),
-                        )
-                    })
-                    .into_any()
-            } else if let SettingsValue::Dropdown(dropdown) = &item.value {
-                let expanded = create_rw_signal(false);
-                let current_value = dropdown
-                    .items
-                    .get(dropdown.active_index)
-                    .or_else(|| dropdown.items.last())
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-                let current_value = create_rw_signal(current_value);
-
-                dropdown_view(
-                    &item,
-                    current_value,
-                    dropdown,
-                    expanded,
-                    settings_data.common.window_common.size,
-                    config,
-                )
+                }
+            });
+            TextInput::new(text_value)
+                .style(move |_| {
+                    resolve_text_input_style(config.get())
+                        .width(300.0)
+                        .keyboard_navigable()
+                })
                 .into_any()
-            } else if item.header {
-                label(move || item.kind.clone())
-                    .style(move |s| {
-                        let config = config.get();
-                        s.line_height(2.0)
-                            .font_bold()
-                            .width_pct(100.0)
-                            .padding_horiz(10.0)
-                            .font_size(config.ui.font_size() as f32 + 2.0)
-                            .background(config.color(LapceColor::PANEL_BACKGROUND))
-                    })
-                    .into_any()
-            } else {
-                empty().into_any()
-            }
+        } else if let SettingsValue::Dropdown(dropdown) = &item.value {
+            let expanded = RwSignal::new(false);
+            let current_value = dropdown
+                .items
+                .get(dropdown.active_index)
+                .or_else(|| dropdown.items.last())
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let current_value = RwSignal::new(current_value);
+
+            dropdown_view(
+                &item,
+                current_value,
+                dropdown,
+                expanded,
+                settings_data.common.window_common.size,
+                config,
+            )
+            .into_any()
+        } else if item.header {
+            Label::new(item.kind.clone())
+                .style(move |s| {
+                    let config = config.get();
+                    s.line_height(2.0)
+                        .font_bold()
+                        .width_pct(100.0)
+                        .padding_horiz(10.0)
+                        .font_size(config.ui.font_size() as f32 + 2.0)
+                        .background(config.color(LapceColor::PANEL_BACKGROUND))
+                })
+                .into_any()
+        } else {
+            Empty::new().into_any()
         }
     };
 
     Stack::new((
-        label(move || item.name.clone()).style(move |s| {
+        Label::new(item.name.clone()).style(move |s| {
             s.font_bold()
                 .text_ellipsis()
                 .min_width(0.0)
@@ -706,7 +594,7 @@ fn settings_item_view(
                 .font_size(config.get().ui.font_size() as f32 + 1.0)
         }),
         Stack::new((
-            label(move || item.description.clone()).style(move |s| {
+            Label::new(item.description.clone()).style(move |s| {
                 s.min_width(0.0)
                     .max_width_pct(100.0)
                     .line_height(1.8)
@@ -716,11 +604,11 @@ fn settings_item_view(
                     .apply_if(item.header, |s| s.hide())
             }),
             if let Some(is_ticked) = is_ticked {
-                let checked = create_rw_signal(is_ticked);
+                let checked = RwSignal::new(is_ticked);
 
                 let kind = item.kind.clone();
                 let field = item.field.clone();
-                create_effect(move |last| {
+                Effect::new(move |last| {
                     let checked = checked.get();
                     if last.is_none() {
                         return;
@@ -733,14 +621,14 @@ fn settings_item_view(
                     }
                 });
 
-                container(
+                Container::new(
                     Stack::new((
                         checkbox(move || checked.get(), config),
-                        label(|| " ".to_string()).style(|s| s.line_height(1.8)),
+                        Label::new(" ").style(|s| s.line_height(1.8)),
                     ))
                     .style(|s| s.items_center()),
                 )
-                .on_click_stop(move |_| {
+                .on_event_stop(EventListener::Click, move |_, _| {
                     checked.update(|checked| {
                         *checked = !*checked;
                     });
@@ -752,10 +640,10 @@ fn settings_item_view(
                         .items_start()
                 })
             } else {
-                container(empty()).style(|s| s.hide())
+                Container::new(Empty::new()).style(|s| s.hide())
             },
         )),
-        view().style(move |s| s.apply_if(!item.header, |s| s.margin_top(6.0))),
+        view.style(move |s| s.apply_if(!item.header, |s| s.margin_top(6.0))),
     ))
     .on_event_stop(
         LayoutChanged::listener(),
@@ -833,14 +721,13 @@ fn color_section_list(
     list: impl Fn() -> BTreeMap<String, String> + 'static,
     max_width: Memo<f64>,
     text_height: Memo<f64>,
-    editors: Editors,
     common: Rc<CommonData>,
 ) -> impl View {
     let config = common.config;
 
     let kind = kind.to_string();
     Stack::new((
-        text(header).style(|s| {
+        Label::new(header).style(|s| {
             s.margin_top(10)
                 .margin_horiz(20)
                 .font_bold()
@@ -850,189 +737,147 @@ fn color_section_list(
             move || BTreeMapVirtualList(list()),
             move |(key, _)| key.to_owned(),
             move |(key, value)| {
-                let cx = Scope::current();
-                let text_input_view = TextInputBuilder::new()
-                    .value(value.clone())
-                    .build(cx, editors, common.clone());
-                let doc = text_input_view.doc_signal();
+                let value = RwSignal::new(value);
 
-                {
+                debounce_action(value, 500.millis(), {
                     let kind = kind.clone();
                     let key = key.clone();
-                    let doc = text_input_view.doc_signal();
-                    create_effect(move |_| {
-                        let doc = doc.get_untracked();
-                        let config = config.get();
-                        let current = doc.buffer.with_untracked(|b| b.to_string());
 
-                        let value = match kind.as_str() {
-                            "base" => config.color_theme.base.get(&key),
-                            "ui" => config.color_theme.ui.get(&key),
-                            "syntax" => config.color_theme.syntax.get(&key),
+                    move || {
+                        let config = config.get_untracked();
+                        let default = match kind.as_str() {
+                            "base" => config.default_color_theme().base.get(&key),
+                            "ui" => config.default_color_theme().ui.get(&key),
+                            "syntax" => {
+                                config.default_color_theme().syntax.get(&key)
+                            }
                             _ => None,
                         };
 
-                        if let Some(value) = value {
-                            if value != &current {
-                                doc.reload(Rope::from(value.to_string()), true);
+                        let parent = format!("color-theme.{kind}");
+
+                        value.with(|text| match default {
+                            Some(val) if val == text => {
+                                LapceConfig::reset_setting(&parent, &key);
                             }
-                        }
-                    });
-                }
+                            _ => {
+                                LapceConfig::update_file(&parent, &key, text.into());
+                            }
+                        });
+                    }
+                });
 
-                {
-                    let timer = create_rw_signal(TimerToken::INVALID);
-                    let kind = kind.clone();
-                    let field = key.clone();
-                    create_effect(move |last| {
-                        let doc = doc.get_untracked();
+                // TODO: Not sure what this effect did - it seems to react on changes to
+                // config and replace value.
+                // Howver updating string from editing feels strange - risk of infinite change loop
+                // is probably low, but still effect will run several times until stabilizes...
+                // {
+                //     let kind = kind.clone();
+                //     let key = key.clone();
+                //     let doc = text_input_view.doc_signal();
+                //     create_effect(move |_| {
+                //         let doc = doc.get_untracked();
+                //         let config = config.get();
+                //         let current = doc.buffer.with_untracked(|b| b.to_string());
 
-                        let rev = doc.buffer.with(|b| b.rev());
-                        if last.is_none() {
-                            return rev;
-                        }
-                        if last == Some(rev) {
-                            return rev;
-                        }
-                        let kind = kind.clone();
-                        let field = field.clone();
-                        let buffer = doc.buffer;
-                        let token =
-                            exec_after(Duration::from_millis(500), move |token| {
-                                if let Some(timer) = timer.try_get_untracked() {
-                                    if timer == token {
-                                        let value =
-                                            buffer.with_untracked(|b| b.to_string());
+                //         let value = match kind.as_str() {
+                //             "base" => config.color_theme.base.get(&key),
+                //             "ui" => config.color_theme.ui.get(&key),
+                //             "syntax" => config.color_theme.syntax.get(&key),
+                //             _ => None,
+                //         };
 
-                                        let config = config.get_untracked();
-                                        let default = match kind.as_str() {
-                                            "base" => config
-                                                .default_color_theme()
-                                                .base
-                                                .get(&field),
-                                            "ui" => config
-                                                .default_color_theme()
-                                                .ui
-                                                .get(&field),
-                                            "syntax" => config
-                                                .default_color_theme()
-                                                .syntax
-                                                .get(&field),
-                                            _ => None,
-                                        };
+                //         if let Some(value) = value {
+                //             if value != &current {
+                //                 doc.reload(Rope::from(value.to_string()), true);
+                //             }
+                //         }
+                //     });
+                // }
 
-                                        if default != Some(&value) {
-                                            let value = serde::Serialize::serialize(
-                                                &value,
-                                                toml_edit::ser::ValueSerializer::new(
-                                                ),
-                                            )
-                                            .ok();
-
-                                            if let Some(value) = value {
-                                                LapceConfig::update_file(
-                                                    &format!("color-theme.{kind}"),
-                                                    &field,
-                                                    value,
-                                                );
-                                            }
-                                        } else {
-                                            LapceConfig::reset_setting(
-                                                &format!("color-theme.{kind}"),
-                                                &field,
-                                            );
-                                        }
-                                    }
-                                }
-                            });
-                        timer.set(token);
-
-                        rev
-                    });
-                }
-
-                let local_kind = kind.clone();
-                let local_key = key.clone();
                 Stack::new((
-                    text(&key).style(move |s| {
+                    Label::new(&key).style(move |s| {
                         s.width(max_width.get()).margin_left(20).margin_right(10)
                     }),
-                    text_input_view.keyboard_navigable().style(move |s| {
-                        s.width(150.0)
+                    TextInput::new(value).style(move |_| {
+                        resolve_text_input_style(config.get())
+                            .width(150.0)
                             .margin_vert(6)
-                            .border(1)
-                            .border_radius(6)
-                            .border_color(
-                                config.get().color(LapceColor::LAPCE_BORDER),
-                            )
+                            .keyboard_navigable()
                     }),
-                    empty().style(move |s| {
-                        let size = text_height.get() + 12.0;
-                        let config = config.get();
-                        let color = match local_kind.as_str() {
-                            "base" => config.color.base.get(&local_key),
-                            "ui" => config.color.ui.get(&local_key).copied(),
-                            "syntax" => config.color.syntax.get(&local_key).copied(),
-                            _ => None,
-                        };
-                        s.border(1)
-                            .border_radius(6)
-                            .size(size, size)
-                            .margin_left(10)
-                            .border_color(config.color(LapceColor::LAPCE_BORDER))
-                            .background(color.unwrap_or_else(|| {
-                                config.color(LapceColor::EDITOR_FOREGROUND)
-                            }))
-                    }),
-                    {
+                    Empty::new().style({
                         let kind = kind.clone();
                         let key = key.clone();
-                        let local_key = key.clone();
-                        let local_kind = kind.clone();
-                        text("Reset")
-                            .on_click_stop(move |_| {
-                                LapceConfig::reset_setting(
-                                    &format!("color-theme.{local_kind}"),
-                                    &local_key,
-                                );
+                        move |s| {
+                            let size = text_height.get() + 12.0;
+                            let config = config.get();
+                            let color = match kind.as_str() {
+                                "base" => config.color.base.get(&key),
+                                "ui" => config.color.ui.get(&key).copied(),
+                                "syntax" => config.color.syntax.get(&key).copied(),
+                                _ => None,
+                            };
+                            s.border(1)
+                                .border_radius(6)
+                                .size(size, size)
+                                .margin_left(10)
+                                .border_color(config.color(LapceColor::LAPCE_BORDER))
+                                .background(color.unwrap_or_else(|| {
+                                    config.color(LapceColor::EDITOR_FOREGROUND)
+                                }))
+                        }
+                    }),
+                    {
+                        Label::new("Reset")
+                            .on_event_stop(EventListener::Click, {
+                                let kind = kind.clone();
+                                let key = key.clone();
+                                move |_, _| {
+                                    LapceConfig::reset_setting(
+                                        &format!("color-theme.{kind}"),
+                                        &key,
+                                    );
+                                }
                             })
-                            .style(move |s| {
-                                let doc = doc.get_untracked();
-                                let config = config.get();
-                                let buffer = doc.buffer;
-                                let content = buffer.with(|b| b.to_string());
+                            .style({
+                                let kind = kind.clone();
+                                move |s| {
+                                    let config = config.get();
 
-                                let same = match kind.as_str() {
-                                    "base" => {
-                                        config.default_color_theme().base.get(&key)
-                                            == Some(&content)
-                                    }
-                                    "ui" => {
-                                        config.default_color_theme().ui.get(&key)
-                                            == Some(&content)
-                                    }
-                                    "syntax" => {
-                                        config.default_color_theme().syntax.get(&key)
-                                            == Some(&content)
-                                    }
-                                    _ => false,
-                                };
+                                    let same = 'same: {
+                                        let theme = match kind.as_str() {
+                                            "base" => {
+                                                &config.default_color_theme().base.0
+                                            }
+                                            "ui" => &config.default_color_theme().ui,
+                                            "syntax" => {
+                                                &config.default_color_theme().syntax
+                                            }
 
-                                s.margin_left(10)
-                                    .padding(6)
-                                    .cursor(CursorStyle::Pointer)
-                                    .border(1)
-                                    .border_radius(6)
-                                    .border_color(
-                                        config.color(LapceColor::LAPCE_BORDER),
-                                    )
-                                    .apply_if(same, |s| s.hide())
-                                    .active(|s| {
-                                        s.background(
-                                            config
-                                                .color(LapceColor::PANEL_BACKGROUND),
+                                            _ => break 'same false,
+                                        };
+                                        theme
+                                            .get(&key)
+                                            .is_some_and(|val| *val == *value.read())
+                                    };
+
+                                    s.margin_left(10)
+                                        .padding(6)
+                                        .cursor(CursorStyle::Pointer)
+                                        .border(1)
+                                        .border_radius(6)
+                                        .border_color(
+                                            config.color(LapceColor::LAPCE_BORDER),
                                         )
-                                    })
+                                        .apply_if(same, |s| s.hide())
+                                        .active(|s| {
+                                            s.background(
+                                                config.color(
+                                                    LapceColor::PANEL_BACKGROUND,
+                                                ),
+                                            )
+                                        })
+                                }
                             })
                     },
                 ))
@@ -1045,13 +890,10 @@ fn color_section_list(
     .style(|s| s.flex_col())
 }
 
-pub fn theme_color_settings_view(
-    editors: Editors,
-    common: Rc<CommonData>,
-) -> impl View {
+pub fn theme_color_settings_view(common: Rc<CommonData>) -> impl View {
     let config = common.config;
 
-    let text_height = create_memo(move |_| {
+    let text_height = Memo::new(move |_| {
         let mut text_layout = TextLayout::new();
         let config = config.get();
         let family: Vec<FamilyOwned> =
@@ -1064,7 +906,7 @@ pub fn theme_color_settings_view(
         text_layout.size().height
     });
 
-    let max_width = create_memo(move |_| {
+    let max_width = Memo::new(move |_| {
         let mut text_layout = TextLayout::new();
         let config = config.get();
         let family: Vec<FamilyOwned> =
@@ -1092,25 +934,17 @@ pub fn theme_color_settings_view(
         max_width
     });
 
-    let cx = Scope::current();
-    let search_editor = editors.make_local(cx, common.clone());
-    let search_editor_id = search_editor.id();
-    let buffer = search_editor.doc_signal().get_untracked().buffer;
+    let filter_pattern: RwSignal<String> = Default::default();
 
     Scroll::new(
         Stack::new((
-            container({
-                TextInputBuilder::new()
-                    .build_editor(search_editor)
-                    .placeholder(|| "Search Settings".to_string())
-                    .keyboard_navigable()
-                    .style(move |s| {
-                        s.width_pct(100.0)
-                            .border_radius(6.0)
-                            .border(1.0)
-                            .border_color(
-                                config.get().color(LapceColor::LAPCE_BORDER),
-                            )
+            Container::new({
+                TextInput::new(filter_pattern)
+                    .placeholder("Search Settings")
+                    .style(move |_| {
+                        resolve_text_input_style(config.get())
+                            .width_pct(100.0)
+                            .keyboard_navigable()
                     })
                     .request_focus(|| {})
             })
@@ -1119,14 +953,15 @@ pub fn theme_color_settings_view(
                 "base",
                 "Base Colors",
                 move || {
-                    let filter = buffer.get().text().to_string();
-                    config.with(|c| {
-                        c.color_theme
+                    let config = config.get();
+                    filter_pattern.with(|filter| {
+                        config
+                            .color_theme
                             .base
                             .0
                             .iter()
                             .filter_map(|x| {
-                                if x.0.contains(&filter) {
+                                if x.0.contains(filter) {
                                     Some((x.0.clone(), x.1.clone()))
                                 } else {
                                     None
@@ -1137,20 +972,20 @@ pub fn theme_color_settings_view(
                 },
                 max_width,
                 text_height,
-                editors,
                 common.clone(),
             ),
             color_section_list(
                 "syntax",
                 "Syntax Colors",
                 move || {
-                    let filter = buffer.get().text().to_string();
-                    config.with(|c| {
-                        c.color_theme
+                    let config = config.get();
+                    filter_pattern.with(|filter| {
+                        config
+                            .color_theme
                             .syntax
                             .iter()
                             .filter_map(|x| {
-                                if x.0.contains(&filter) {
+                                if x.0.contains(filter) {
                                     Some((x.0.clone(), x.1.clone()))
                                 } else {
                                     None
@@ -1161,20 +996,20 @@ pub fn theme_color_settings_view(
                 },
                 max_width,
                 text_height,
-                editors,
                 common.clone(),
             ),
             color_section_list(
                 "ui",
                 "UI Colors",
                 move || {
-                    let filter = buffer.get().text().to_string();
-                    config.with(|c| {
-                        c.color_theme
+                    let config = config.get();
+                    filter_pattern.with(|filter| {
+                        config
+                            .color_theme
                             .ui
                             .iter()
                             .filter_map(|x| {
-                                if x.0.contains(&filter) {
+                                if x.0.contains(filter) {
                                     Some((x.0.clone(), x.1.clone()))
                                 } else {
                                     None
@@ -1185,7 +1020,6 @@ pub fn theme_color_settings_view(
                 },
                 max_width,
                 text_height,
-                editors,
                 common.clone(),
             ),
         ))
@@ -1193,9 +1027,6 @@ pub fn theme_color_settings_view(
     )
     .style(|s| s.absolute().size_full())
     .debug_name("Theme Color Settings")
-    .on_cleanup(move || {
-        editors.remove(search_editor_id);
-    })
 }
 
 fn dropdown_view(
@@ -1206,16 +1037,16 @@ fn dropdown_view(
     window_size: RwSignal<Size>,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View + use<> {
-    let window_origin = create_rw_signal(Point::ZERO);
-    let size = create_rw_signal(Size::ZERO);
-    let overlay_id = create_rw_signal(None);
-    let dropdown_input_focus = create_rw_signal(false);
-    let dropdown_scroll_focus = create_rw_signal(true);
+    let window_origin = RwSignal::new(Point::ZERO);
+    let size = RwSignal::new(Size::ZERO);
+    let overlay_id = RwSignal::new(None);
+    let dropdown_input_focus = RwSignal::new(false);
+    let dropdown_scroll_focus = RwSignal::new(true);
 
     {
         let item = item.to_owned();
         let dropdown = dropdown.to_owned();
-        create_effect(move |_| {
+        Effect::new(move |_| {
             if expanded.get() {
                 let item = item.clone();
                 let dropdown = dropdown.clone();
@@ -1240,13 +1071,13 @@ fn dropdown_view(
     }
 
     Stack::new((
-        label(move || current_value.get()).style(move |s| {
+        Label::derived(move || current_value).style(move |s| {
             s.text_ellipsis()
                 .width_pct(100.0)
                 .padding_horiz(10.0)
                 .selectable(false)
         }),
-        container(
+        Container::new(
             svg(move || {
                 if expanded.get() {
                     config.get().ui_svg(LapceIcons::CLOSE)
@@ -1263,7 +1094,7 @@ fn dropdown_view(
         )
         .style(|s| s.padding_right(4.0)),
     ))
-    .on_click_stop(move |_| {
+    .on_event_stop(EventListener::Click, move |_, _| {
         expanded.update(|expanded| {
             *expanded = !*expanded;
         });
@@ -1291,8 +1122,8 @@ fn dropdown_view(
             .border_radius(6.0)
             .width(250.0)
             .line_height(1.8)
+            .keyboard_navigable()
     })
-    .keyboard_navigable()
     .on_event_stop(EventListener::FocusGained, move |_, _| {
         dropdown_input_focus.set(true);
     })
@@ -1329,9 +1160,9 @@ fn dropdown_scroll(
     let view_fn = move |item_string: String| {
         let kind = kind.clone();
         let field = field.clone();
-        let local_item_string = item_string.clone();
-        label(move || local_item_string.clone())
-            .on_click_stop(move |_| {
+
+        Label::new(item_string.clone())
+            .on_event_stop(EventListener::Click, move |_, _| {
                 current_value.set(item_string.clone());
                 if let Ok(value) = serde::Serialize::serialize(
                     &item_string,
@@ -1352,7 +1183,7 @@ fn dropdown_scroll(
 
     let items = dropdown.items.clone();
 
-    let scroll_size = create_rw_signal(Size::ZERO);
+    let scroll_size = RwSignal::new(Size::ZERO);
 
     Scroll::new({
         dyn_stack(move || items.clone(), |item| item.to_string(), view_fn)
@@ -1362,8 +1193,8 @@ fn dropdown_scroll(
         s.width_pct(100.0)
             .max_height(200.0)
             .set(PropagatePointerWheel, false)
+            .keyboard_navigable()
     })
-    .keyboard_navigable()
     .request_focus(|| {})
     .on_event_stop(EventListener::FocusGained, move |_, _| {
         dropdown_scroll_focus.set(true);

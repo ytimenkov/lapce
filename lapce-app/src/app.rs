@@ -1414,10 +1414,10 @@ fn editor_tab_content(
                 }
             }
             EditorTabChild::Settings(_) => {
-                settings_view(plugin.installed, editors, common).into_any()
+                settings_view(plugin.installed, common).into_any()
             }
             EditorTabChild::ThemeColorSettings(_) => {
-                theme_color_settings_view(editors, common).into_any()
+                theme_color_settings_view(common).into_any()
             }
             EditorTabChild::Keymap(_) => keymap_view(editors, common).into_any(),
             EditorTabChild::Volt(_, id) => {

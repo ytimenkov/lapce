@@ -180,6 +180,32 @@ impl ColorThemeConfig {
     }
 }
 
+pub fn resolve_text_input_style(
+    config: std::sync::Arc<crate::config::LapceConfig>,
+) -> floem::style::Style {
+    use crate::config::color::LapceColor;
+
+    floem::style::Style::new()
+        .cursor_color(config.color(LapceColor::EDITOR_CARET))
+        .color(config.color(LapceColor::EDITOR_FOREGROUND))
+        .background(config.color(LapceColor::EDITOR_BACKGROUND))
+        .border_radius(6.0)
+        .border(1.0)
+        .border_color(config.color(LapceColor::LAPCE_BORDER))
+        .set(
+            floem::views::editor::SelectionColor,
+            config
+                .color(LapceColor::EDITOR_SELECTION)
+                .map(|x, y, z, a| [x, y, z, a.min(0.8)]),
+        )
+        // TODO: This doesn't make placeholder reactive, but overall resolve_text_input_style should be called
+        // within closure & capture access to config and therefore rerun...
+        // That should be converted into theme...
+        .class(floem::views::PlaceholderTextClass, move |s| {
+            s.color(config.color(LapceColor::EDITOR_FOREGROUND))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use config::Config;
