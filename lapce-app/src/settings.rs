@@ -4,7 +4,7 @@ use floem::{
     IntoView, View,
     action::{add_overlay, debounce_action, remove_overlay},
     context::LayoutChanged,
-    event::listener as EventListener,
+    event::listener as event,
     kurbo::Vec2,
     peniko::kurbo::{Point, Rect, Size},
     reactive::{
@@ -346,7 +346,7 @@ pub fn settings_view(
             Label::new(k.clone())
                 .style(move |s| s.text_ellipsis().padding_left(margin)),
         )
-        .on_event_stop(EventListener::Click, move |_, _| {
+        .on_event_stop(event::Click, move |_, _| {
             if let Some(pos) = pos() {
                 ensure_visible.set(
                     settings_content_size
@@ -514,25 +514,22 @@ fn settings_item_view(
                 let kind = item.kind.clone();
                 let field = item.field.clone();
 
-                // FIXME: Figure out how to block certain keys in inputs and not hate myself
-                // NOTE: ^^ This comment was before. What could be done is to add an associated text signal
-                // - validation error which is bound to label which shown only when non-empty label (maybe via dyn_contaier)
+                // NOTE: Settings are applied automatically but maybe it's a good idea to either
+                // provide explicit apply / discard or at least a way to restore setting to previous value
+                // and remove completely, resetting to default.
+                // Another QoL improvement is to add an associated text signal - validation error
+                // which is bound to label which shown only when non-empty label (maybe via dyn_contaier)
                 // This function should just set parse error.
-                // Or validation can run on each change immediately and produce Value, then Value should be debounced.
+                // Or validation can run on each change immediately and produce signal <Value>, which
+                // is comsumed in debounce_action without extra conversion.
                 move || {
                     let value: Option<toml_edit::Value> = match &item_value {
-                        serde_json::Value::Number(n) if n.is_f64() => text_value
-                            .read()
-                            .trim()
-                            .parse::<f64>()
-                            .map(Into::into)
-                            .ok(),
-                        serde_json::Value::Number(_) => text_value
-                            .read()
-                            .trim()
-                            .parse::<i64>()
-                            .map(Into::into)
-                            .ok(),
+                        serde_json::Value::Number(n) if n.is_f64() => {
+                            text_value.read().parse::<f64>().map(Into::into).ok()
+                        }
+                        serde_json::Value::Number(_) => {
+                            text_value.read().parse::<i64>().map(Into::into).ok()
+                        }
                         _ => Some(text_value.get().into()),
                     };
 
@@ -628,7 +625,7 @@ fn settings_item_view(
                     ))
                     .style(|s| s.items_center()),
                 )
-                .on_event_stop(EventListener::Click, move |_, _| {
+                .on_event_stop(event::Click, move |_, _| {
                     checked.update(|checked| {
                         *checked = !*checked;
                     });
@@ -829,7 +826,7 @@ fn color_section_list(
                     }),
                     {
                         Label::new("Reset")
-                            .on_event_stop(EventListener::Click, {
+                            .on_event_stop(event::Click, {
                                 let kind = kind.clone();
                                 let key = key.clone();
                                 move |_, _| {
@@ -1094,7 +1091,7 @@ fn dropdown_view(
         )
         .style(|s| s.padding_right(4.0)),
     ))
-    .on_event_stop(EventListener::Click, move |_, _| {
+    .on_event_stop(event::Click, move |_, _| {
         expanded.update(|expanded| {
             *expanded = !*expanded;
         });
@@ -1124,10 +1121,10 @@ fn dropdown_view(
             .line_height(1.8)
             .keyboard_navigable()
     })
-    .on_event_stop(EventListener::FocusGained, move |_, _| {
+    .on_event_stop(event::FocusGained, move |_, _| {
         dropdown_input_focus.set(true);
     })
-    .on_event_stop(EventListener::FocusLost, move |_, _| {
+    .on_event_stop(event::FocusLost, move |_, _| {
         dropdown_input_focus.set(false);
         if expanded.get_untracked() && !dropdown_scroll_focus.get_untracked() {
             expanded.set(false);
@@ -1162,7 +1159,7 @@ fn dropdown_scroll(
         let field = field.clone();
 
         Label::new(item_string.clone())
-            .on_event_stop(EventListener::Click, move |_, _| {
+            .on_event_stop(event::Click, move |_, _| {
                 current_value.set(item_string.clone());
                 if let Ok(value) = serde::Serialize::serialize(
                     &item_string,
@@ -1196,17 +1193,17 @@ fn dropdown_scroll(
             .keyboard_navigable()
     })
     .request_focus(|| {})
-    .on_event_stop(EventListener::FocusGained, move |_, _| {
+    .on_event_stop(event::FocusGained, move |_, _| {
         dropdown_scroll_focus.set(true);
     })
-    .on_event_stop(EventListener::FocusLost, move |_, _| {
+    .on_event_stop(event::FocusLost, move |_, _| {
         dropdown_scroll_focus.set(false);
         if expanded.get_untracked() && !dropdown_input_focus.get_untracked() {
             expanded.set(false);
         }
     })
-    .on_event_stop(EventListener::PointerMove, move |_, _| {})
-    .on_event_stop(EventListener::PointerDown, move |_, _| {})
+    .on_event_stop(event::PointerMove, move |_, _| {})
+    .on_event_stop(event::PointerDown, move |_, _| {})
     .on_event_stop(
         LayoutChanged::listener(),
         move |_, LayoutChanged { new_box, .. }| {
