@@ -6,7 +6,6 @@ use floem::{
     peniko::kurbo::{Point, Size},
     reactive::{
         Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
-        use_context,
     },
     window::WindowId,
 };
@@ -53,6 +52,7 @@ pub struct WindowCommonData {
     pub hide_cursor: RwSignal<bool>,
     pub app_view_id: RwSignal<ViewId>,
     pub extra_plugin_paths: Arc<Vec<PathBuf>>,
+    pub db: Arc<LapceDb>,
 }
 
 /// `WindowData` is the application model for a top-level window.
@@ -92,6 +92,7 @@ impl WindowData {
         latest_release: ReadSignal<Arc<Option<ReleaseInfo>>>,
         extra_plugin_paths: Arc<Vec<PathBuf>>,
         app_command: Listener<AppCommand>,
+        db: Arc<LapceDb>,
     ) -> Self {
         // let cx = Scope::new();
         let cx = Scope::current().create_child();
@@ -126,6 +127,7 @@ impl WindowData {
             hide_cursor,
             app_view_id,
             extra_plugin_paths,
+            db,
         });
 
         for w in info.tabs.workspaces {
@@ -204,7 +206,7 @@ impl WindowData {
     pub fn run_window_command(&self, cmd: WindowCommand) {
         match cmd {
             WindowCommand::SetWorkspace { workspace } => {
-                let db: Arc<LapceDb> = use_context().unwrap();
+                let db = &*self.common.db;
                 if let Err(err) = db.update_recent_workspace(&workspace) {
                     tracing::error!("{:?}", err);
                 }
@@ -241,8 +243,8 @@ impl WindowData {
                 })
             }
             WindowCommand::NewWorkspaceTab { workspace, end } => {
-                let db: Arc<LapceDb> = use_context().unwrap();
-                if let Err(err) = db.update_recent_workspace(&workspace) {
+                if let Err(err) = self.common.db.update_recent_workspace(&workspace)
+                {
                     tracing::error!("{:?}", err);
                 }
 
@@ -284,8 +286,10 @@ impl WindowData {
                     if index < window_tabs.len() {
                         let (_, old_window_tab) = window_tabs.remove(index);
                         old_window_tab.proxy.shutdown();
-                        let db: Arc<LapceDb> = use_context().unwrap();
-                        if let Err(err) = db.save_window_tab(old_window_tab) {
+
+                        if let Err(err) =
+                            self.common.db.save_window_tab(old_window_tab)
+                        {
                             tracing::error!("{:?}", err);
                         }
                     }

@@ -2,9 +2,7 @@ use std::{rc::Rc, sync::Arc};
 
 use floem::{
     kurbo::Size,
-    reactive::{
-        Memo, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith, use_context,
-    },
+    reactive::{Memo, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith},
 };
 use serde::{Deserialize, Serialize};
 
@@ -430,8 +428,10 @@ impl PanelData {
             style.shown = true;
         });
 
-        let db: Arc<LapceDb> = use_context().unwrap();
-        db.save_panel_orders(self.panels.get_untracked());
+        self.common
+            .window_common
+            .db
+            .save_panel_orders(self.panels.get_untracked());
     }
 
     pub fn section_open(&self, section: PanelSection) -> RwSignal<bool> {

@@ -16,10 +16,7 @@ use anyhow::Result;
 use floem::{
     ext_event::create_ext_action,
     prelude::Modifiers,
-    reactive::{
-        ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
-        use_context,
-    },
+    reactive::{ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith},
     receiver_signal::ChannelSignal,
 };
 use itertools::Itertools;
@@ -680,8 +677,12 @@ impl PaletteData {
 
     /// Initialize the palette with all the available workspaces, local and remote.
     fn get_workspaces(&self) {
-        let db: Arc<LapceDb> = use_context().unwrap();
-        let workspaces = db.recent_workspaces().unwrap_or_default();
+        let workspaces = self
+            .common
+            .window_common
+            .db
+            .recent_workspaces()
+            .unwrap_or_default();
 
         let items = workspaces
             .into_iter()
@@ -879,8 +880,12 @@ impl PaletteData {
     }
 
     fn get_ssh_hosts(&self) {
-        let db: Arc<LapceDb> = use_context().unwrap();
-        let workspaces = db.recent_workspaces().unwrap_or_default();
+        let workspaces = self
+            .common
+            .window_common
+            .db
+            .recent_workspaces()
+            .unwrap_or_default();
         let mut hosts = HashSet::new();
         for workspace in workspaces.iter() {
             if let LapceWorkspaceType::RemoteSSH(host) = &workspace.kind {
@@ -932,8 +937,12 @@ impl PaletteData {
             vec![]
         };
 
-        let db: Arc<LapceDb> = use_context().unwrap();
-        let workspaces = db.recent_workspaces().unwrap_or_default();
+        let workspaces = self
+            .common
+            .window_common
+            .db
+            .recent_workspaces()
+            .unwrap_or_default();
         let mut hosts = HashSet::new();
         for distro in distros {
             hosts.insert(distro);

@@ -22,7 +22,7 @@ use floem::{
     prelude::SignalTrack,
     reactive::{
         Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith,
-        WriteSignal, use_context,
+        WriteSignal,
     },
     receiver_signal::ChannelSignal,
     text::{Attrs, AttrsList, FamilyOwned, LineHeightValue, TextLayout},
@@ -294,20 +294,21 @@ impl WindowTabData {
         window_common: Rc<WindowCommonData>,
     ) -> Self {
         let cx = cx.create_child();
-        let db: Arc<LapceDb> = use_context().unwrap();
 
-        let disabled_volts = db.get_disabled_volts().unwrap_or_default();
-        let workspace_disabled_volts = db
+        let disabled_volts =
+            window_common.db.get_disabled_volts().unwrap_or_default();
+        let workspace_disabled_volts = window_common
+            .db
             .get_workspace_disabled_volts(&workspace)
             .unwrap_or_default();
         let mut all_disabled_volts = disabled_volts.clone();
         all_disabled_volts.extend(workspace_disabled_volts.clone());
 
-        let workspace_info = if workspace.path.is_some() {
-            db.get_workspace_info(&workspace).ok()
-        } else {
-            let mut info = db.get_workspace_info(&workspace).ok();
-            if let Some(info) = info.as_mut() {
+        let workspace_info = {
+            let mut info = window_common.db.get_workspace_info(&workspace).ok();
+            if workspace.path.is_none()
+                && let Some(info) = info.as_mut()
+            {
                 info.split.children.clear();
             }
             info
@@ -440,56 +441,54 @@ impl WindowTabData {
 
         let title_height = cx.create_rw_signal(0.0);
         let status_height = cx.create_rw_signal(0.0);
-        let panel_available_size = cx.create_memo(move |_| {
-            let title_height = title_height.get();
-            let status_height = status_height.get();
-            let num_window_tabs = window_common.num_window_tabs.get();
-            let window_size = window_common.size.get();
-            Size::new(
-                window_size.width,
-                window_size.height
-                    - title_height
-                    - status_height
-                    - if num_window_tabs > 1 {
-                        window_common.window_tab_header_height.get()
-                    } else {
-                        0.0
-                    },
-            )
-        });
-        let panel = workspace_info
-            .as_ref()
-            .map(|i| {
-                let panel_order = db
-                    .get_panel_orders()
-                    .unwrap_or_else(|_| default_panel_order());
-                PanelData {
-                    panels: cx.create_rw_signal(panel_order),
-                    styles: cx.create_rw_signal(i.panel.styles.clone()),
-                    size: cx.create_rw_signal(i.panel.size.clone()),
-                    available_size: panel_available_size,
-                    sections: cx.create_rw_signal(
-                        i.panel
-                            .sections
-                            .iter()
-                            .map(|(key, value)| (*key, cx.create_rw_signal(*value)))
-                            .collect(),
-                    ),
-                    common: common.clone(),
-                }
-            })
-            .unwrap_or_else(|| {
-                let panel_order = db
-                    .get_panel_orders()
-                    .unwrap_or_else(|_| default_panel_order());
-                PanelData::new(
-                    cx,
-                    panel_order,
-                    panel_available_size,
-                    imbl::HashMap::new(),
-                    common.clone(),
+        let panel_available_size = cx.create_memo({
+            let window_common = window_common.clone();
+
+            move |_| {
+                let title_height = title_height.get();
+                let status_height = status_height.get();
+                let num_window_tabs = window_common.num_window_tabs.get();
+                let window_size = window_common.size.get();
+                Size::new(
+                    window_size.width,
+                    window_size.height
+                        - title_height
+                        - status_height
+                        - if num_window_tabs > 1 {
+                            window_common.window_tab_header_height.get()
+                        } else {
+                            0.0
+                        },
                 )
-            });
+            }
+        });
+        let panel_order = window_common
+            .db
+            .get_panel_orders()
+            .unwrap_or_else(|_| default_panel_order());
+        let panel = match &workspace_info {
+            Some(i) => PanelData {
+                panels: cx.create_rw_signal(panel_order),
+                styles: cx.create_rw_signal(i.panel.styles.clone()),
+                size: cx.create_rw_signal(i.panel.size.clone()),
+                available_size: panel_available_size,
+                sections: cx.create_rw_signal(
+                    i.panel
+                        .sections
+                        .iter()
+                        .map(|(key, value)| (*key, cx.create_rw_signal(*value)))
+                        .collect(),
+                ),
+                common: common.clone(),
+            },
+            None => PanelData::new(
+                cx,
+                panel_order,
+                panel_available_size,
+                imbl::HashMap::new(),
+                common.clone(),
+            ),
+        };
 
         let terminal = TerminalPanelData::new(
             workspace.clone(),
@@ -637,10 +636,16 @@ impl WindowTabData {
     }
 
     pub fn reload_config(&self) {
-        let db: Arc<LapceDb> = use_context().unwrap();
-
-        let disabled_volts = db.get_disabled_volts().unwrap_or_default();
-        let workspace_disabled_volts = db
+        let disabled_volts = self
+            .common
+            .window_common
+            .db
+            .get_disabled_volts()
+            .unwrap_or_default();
+        let workspace_disabled_volts = self
+            .common
+            .window_common
+            .db
             .get_workspace_disabled_volts(&self.workspace)
             .unwrap_or_default();
         let mut all_disabled_volts = disabled_volts;

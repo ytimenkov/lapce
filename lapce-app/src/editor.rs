@@ -15,7 +15,6 @@ use floem::{
     prelude::SignalTrack,
     reactive::{
         ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith, batch,
-        use_context,
     },
     ui_events::{
         keyboard::Modifiers,
@@ -2202,8 +2201,11 @@ impl EditorData {
         } else if let Some(edits) = edits.as_ref() {
             self.do_text_edit(edits);
         } else {
-            let db: Arc<LapceDb> = use_context().unwrap();
-            if let Ok(info) = db.get_doc_info(&self.common.workspace, &location.path)
+            if let Ok(info) = self
+                .common
+                .window_common
+                .db
+                .get_doc_info(&self.common.workspace, &location.path)
             {
                 self.go_to_position(
                     EditorPosition::Offset(info.cursor_offset),
@@ -2578,8 +2580,7 @@ impl EditorData {
         let cursor_offset = self.cursor().with_untracked(|c| c.offset());
         let scroll_offset = self.viewport().with_untracked(|v| v.origin().to_vec2());
 
-        let db: Arc<LapceDb> = use_context().unwrap();
-        db.save_doc_position(
+        self.common.window_common.db.save_doc_position(
             &self.common.workspace,
             path,
             cursor_offset,

@@ -15,7 +15,7 @@ use floem::{
     prelude::Modifiers,
     reactive::{
         RwSignal, Scope, SignalGet, SignalUpdate, SignalWith, create_effect,
-        create_memo, create_rw_signal, use_context,
+        create_memo, create_rw_signal,
     },
     style::CursorStyle,
     text::{Attrs, AttrsList},
@@ -315,8 +315,7 @@ impl PluginData {
             self.disabled.update(|d| {
                 d.remove(&id);
             });
-            let db: Arc<LapceDb> = use_context().unwrap();
-            db.save_disabled_volts(
+            self.common.window_common.db.save_disabled_volts(
                 self.disabled.get_untracked().into_iter().collect(),
             );
         }
@@ -325,8 +324,7 @@ impl PluginData {
             self.workspace_disabled.update(|d| {
                 d.remove(&id);
             });
-            let db: Arc<LapceDb> = use_context().unwrap();
-            db.save_workspace_disabled_volts(
+            self.common.window_common.db.save_workspace_disabled_volts(
                 self.common.workspace.clone(),
                 self.workspace_disabled
                     .get_untracked()
@@ -537,8 +535,9 @@ impl PluginData {
         if !self.plugin_disabled(&id) {
             self.common.proxy.enable_volt(volt);
         }
-        let db: Arc<LapceDb> = use_context().unwrap();
-        db.save_disabled_volts(self.disabled.get_untracked().into_iter().collect());
+        self.common.window_common.db.save_disabled_volts(
+            self.disabled.get_untracked().into_iter().collect(),
+        );
     }
 
     pub fn disable_volt(&self, volt: VoltInfo) {
@@ -547,8 +546,9 @@ impl PluginData {
             d.insert(id);
         });
         self.common.proxy.disable_volt(volt);
-        let db: Arc<LapceDb> = use_context().unwrap();
-        db.save_disabled_volts(self.disabled.get_untracked().into_iter().collect());
+        self.common.window_common.db.save_disabled_volts(
+            self.disabled.get_untracked().into_iter().collect(),
+        );
     }
 
     pub fn enable_volt_for_ws(&self, volt: VoltInfo) {
@@ -559,8 +559,8 @@ impl PluginData {
         if !self.plugin_disabled(&id) {
             self.common.proxy.enable_volt(volt);
         }
-        let db: Arc<LapceDb> = use_context().unwrap();
-        db.save_workspace_disabled_volts(
+
+        self.common.window_common.db.save_workspace_disabled_volts(
             self.common.workspace.clone(),
             self.disabled.get_untracked().into_iter().collect(),
         );
@@ -572,8 +572,7 @@ impl PluginData {
             d.insert(id);
         });
         self.common.proxy.disable_volt(volt);
-        let db: Arc<LapceDb> = use_context().unwrap();
-        db.save_workspace_disabled_volts(
+        self.common.window_common.db.save_workspace_disabled_volts(
             self.common.workspace.clone(),
             self.disabled.get_untracked().into_iter().collect(),
         );

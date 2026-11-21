@@ -222,8 +222,7 @@ impl AppData {
                     .position(window.position.get_untracked() + (50.0, 50.0))
             })
             .or_else(|| {
-                let db: Arc<LapceDb> = floem::reactive::Context::get().unwrap();
-                db.get_window().ok().map(|info| {
+                self.db.get_window().ok().map(|info| {
                     self.default_window_config()
                         .size(info.size)
                         .position(info.pos)
@@ -460,7 +459,6 @@ impl AppData {
         files: Vec<PathObject>,
     ) -> impl View + use<> {
         let app_view_id = RwSignal::new(floem::ViewId::new());
-        floem::reactive::Context::provide(self.db.clone());
         let window_data = WindowData::new(
             window_id,
             app_view_id,
@@ -469,6 +467,7 @@ impl AppData {
             self.latest_release.read_only(),
             self.plugin_paths.clone(),
             self.app_command,
+            self.db.clone(),
         );
 
         {
