@@ -144,14 +144,17 @@ impl SettingsData {
                     into_settings_map(&config.terminal),
                 ),
             ] {
-                let pos = cx.create_rw_signal(Point::new(0.0, item_height_accum));
-                data_items.push_back(SettingsItem {
-                    kind: kind.to_string(),
-                    pos,
-                    header: true,
-                    ..Default::default()
+                cx.enter(|| {
+                    let pos = RwSignal::new(Point::new(0.0, item_height_accum));
+
+                    data_items.push_back(SettingsItem {
+                        kind: kind.to_string(),
+                        pos,
+                        header: true,
+                        ..Default::default()
+                    });
+                    data_kinds.push_back((kind.to_string(), pos));
                 });
-                data_kinds.push_back((kind.to_string(), pos));
                 for (name, desc) in fields.iter().zip(descs.iter()) {
                     let field = name.replace('_', "-");
 
@@ -176,17 +179,17 @@ impl SettingsData {
                     let filter_text = format!("{kind} {name} {desc}").to_lowercase();
                     let filter_text =
                         format!("{filter_text}{}", filter_text.replace(' ', ""));
-                    data_items.push_back(SettingsItem {
-                        kind,
-                        name,
-                        field,
-                        filter_text,
-                        description: desc.to_string(),
-                        value,
-                        pos: cx.create_rw_signal(Point::ZERO),
-                        size: cx.create_rw_signal(Size::ZERO),
-                        serde_value,
-                        header: false,
+                    cx.enter(|| {
+                        data_items.push_back(SettingsItem {
+                            kind,
+                            name,
+                            field,
+                            filter_text,
+                            description: desc.to_string(),
+                            value,
+                            serde_value,
+                            ..Default::default()
+                        });
                     });
                     item_height_accum += 50.0;
                 }
@@ -203,15 +206,17 @@ impl SettingsData {
                 let kind = meta.name;
                 let plugin_config = config.plugins.get(&kind);
                 if let Some(config) = meta.config {
-                    let pos =
-                        cx.create_rw_signal(Point::new(0.0, item_height_accum));
-                    setting_items.push_back(SettingsItem {
-                        kind: meta.display_name.clone(),
-                        pos,
-                        header: true,
-                        ..Default::default()
+                    cx.enter(|| {
+                        let pos = RwSignal::new(Point::new(0.0, item_height_accum));
+
+                        setting_items.push_back(SettingsItem {
+                            kind: meta.display_name.clone(),
+                            pos,
+                            header: true,
+                            ..Default::default()
+                        });
+                        plugin_kinds_tmp.push_back((meta.display_name.clone(), pos));
                     });
-                    plugin_kinds_tmp.push_back((meta.display_name.clone(), pos));
 
                     {
                         let mut local_items = Vec::new();
@@ -233,22 +238,23 @@ impl SettingsData {
 
                             let value = plugin_config
                                 .and_then(|config| config.get(&field).cloned())
-                                .unwrap_or(config.default);
-                            let value = SettingsValue::from(value);
+                                .unwrap_or(config.default)
+                                .into();
 
-                            let item = SettingsItem {
-                                kind: kind.clone(),
-                                name,
-                                field,
-                                filter_text,
-                                description: desc.to_string(),
-                                value,
-                                ..Default::default()
-                            };
-                            local_items.push(item);
+                            cx.enter(|| {
+                                local_items.push(SettingsItem {
+                                    kind: kind.clone(),
+                                    name,
+                                    field,
+                                    filter_text,
+                                    description: desc.to_string(),
+                                    value,
+                                    ..Default::default()
+                                });
+                            });
                             item_height_accum += 50.0;
                         }
-                        local_items.sort_by_key(|i| i.name.clone());
+                        local_items.sort_by(|l, r| l.name.cmp(&r.name));
                         setting_items.extend(local_items);
                     }
                 }
