@@ -16,7 +16,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use floem::{
-    IntoView, View,
+    HasViewId, IntoView, View, ViewId,
     action::show_context_menu,
     context::LayoutChanged,
     event::{EventPropagation, listener as EventListener},
@@ -29,7 +29,7 @@ use floem::{
     prelude::SignalTrack,
     reactive::{
         Effect, Memo, ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate,
-        SignalWith, create_rw_signal,
+        SignalWith, UpdaterEffect, create_rw_signal,
     },
     receiver_signal::ChannelSignal,
     style::{
@@ -44,8 +44,8 @@ use floem::{
     ui_events::pointer::{PointerButton, PointerButtonEvent},
     unit::PxPctAuto,
     views::{
-        Decorators, Scroll, VirtualVector, clip, container, drag_resize_window_area,
-        drag_window_area, dyn_stack,
+        Decorators, Scroll, TextInput, VirtualVector, clip, container,
+        drag_resize_window_area, drag_window_area, dyn_stack,
         editor::{core::register::Clipboard, text::SystemClipboard},
         empty, label, rich_text,
         scroll::{PropagatePointerWheel, ScrollChanged, VerticalScrollAsHorizontal},
@@ -77,8 +77,8 @@ use crate::{
         WindowCommand,
     },
     config::{
-        LapceConfig, color::LapceColor, icon::LapceIcons, ui::TabSeparatorHeight,
-        watcher::ConfigWatcher,
+        LapceConfig, color::LapceColor, color_theme::resolve_text_input_style,
+        icon::LapceIcons, ui::TabSeparatorHeight, watcher::ConfigWatcher,
     },
     db::LapceDb,
     debug::RunDebugMode,
@@ -2681,27 +2681,53 @@ fn palette_item(
 }
 
 fn palette_input(window_tab_data: Rc<WindowTabData>) -> impl View {
-    let editor = window_tab_data.palette.input_editor.clone();
     let config = window_tab_data.common.config;
-    let focus = window_tab_data.common.focus;
-    let is_focused = move || focus.get() == Focus::Palette;
-
-    let input = TextInputBuilder::new()
-        .is_focused(is_focused)
-        .build_editor(editor)
-        .placeholder(move || window_tab_data.palette.placeholder_text().to_owned())
-        .style(|s| s.width_full());
-
-    container(container(input).style(move |s| {
-        let config = config.get();
-        s.width_full()
+    // TODO: Placeholder in floem is not reactive.
+    // .placeholder(move || window_tab_data.palette.placeholder_text().to_owned())
+    let input = TextInput::new(window_tab_data.palette.input).style(move |_| {
+        resolve_text_input_style(config.get())
+            .width_full()
             .height(25.0)
-            .items_center()
-            .border_bottom(1.0)
-            .border_color(config.color(LapceColor::LAPCE_BORDER))
-            .background(config.color(LapceColor::EDITOR_BACKGROUND))
-    }))
-    .style(|s| s.padding_bottom(5.0))
+            .padding_bottom(5.0)
+    });
+
+    UpdaterEffect::new(
+        {
+            let focus = window_tab_data.common.focus.read_only();
+            move || focus.get()
+        },
+        {
+            let input_view_id = input.view_id();
+            // TODO: This is a clone of quite fat struct. But worse is that `.cancel()` is invoked
+            // on a clone of struct rather than clone of a handle. The struct is itself is a bunch of
+            // handles, so it's mostly fine, but semantically is quite wrong to do it this way.
+            // NOTE: The focus handling code was moved from palette.rs, since handling focus looks more
+            // in the right place here, in a view.
+            let palette = window_tab_data.palette.clone();
+            move |focus| {
+                if focus == Focus::Palette {
+                    // TODO: This doesn't work since lapce takes over all key events at the top level view
+                    // and propagates "manually". top-level view is always stays focused and receives events.
+                    input_view_id.request_focus();
+                } else if palette.status.get_untracked() != PaletteStatus::Inactive {
+                    // TODO: Why go via command if it runs cancel in the end?.. Maybe just make it pub?
+                    //palette.cancel();
+                    tracing::info!("Canceling focus");
+                    crate::keypress::KeyPressFocus::run_command(
+                        &palette,
+                        &LapceCommand {
+                            kind: CommandKind::Focus(FocusCommand::ModalClose),
+                            data: None,
+                        },
+                        None,
+                        Default::default(),
+                    );
+                }
+            }
+        },
+    );
+
+    input
 }
 
 // struct PaletteItems(imbl::Vector<PaletteItem>);
@@ -2746,7 +2772,7 @@ fn palette_content(
             virtual_stack(
                 move || VectorItems(items.get()),
                 move |(i, _item)| {
-                    (run_id.get_untracked(), *i, input.get_untracked().input)
+                    (run_id.get_untracked(), *i, input.get_untracked())
                 },
                 move |(i, item)| {
                     let workspace = workspace.clone();

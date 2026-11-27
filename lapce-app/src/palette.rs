@@ -16,14 +16,16 @@ use anyhow::Result;
 use floem::{
     ext_event::create_ext_action,
     prelude::Modifiers,
-    reactive::{ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith},
+    reactive::{
+        ReadSignal, RwSignal, Scope, SignalGet, SignalTrack, SignalUpdate,
+        SignalWith, UpdaterEffect,
+    },
     receiver_signal::ChannelSignal,
 };
 use itertools::Itertools;
 use lapce_core::{
-    buffer::rope_text::RopeText, command::FocusCommand, cursor::CursorAffinity,
-    language::LapceLanguage, line_ending::LineEnding, mode::Mode,
-    movement::Movement, selection::Selection, syntax::Syntax,
+    buffer::rope_text::RopeText, command::FocusCommand, language::LapceLanguage,
+    line_ending::LineEnding, mode::Mode, movement::Movement, syntax::Syntax,
 };
 use lapce_rpc::proxy::{PathRequest, ProxyResponse};
 use lapce_xi_rope::Rope;
@@ -40,7 +42,6 @@ use crate::{
     command::{
         CommandExecuted, CommandKind, InternalCommand, LapceCommand, WindowCommand,
     },
-    db::LapceDb,
     debug::{RunDebugConfigs, RunDebugMode},
     editor::{
         EditorData,
@@ -66,20 +67,6 @@ pub enum PaletteStatus {
     Done,
 }
 
-#[derive(Clone, Debug)]
-pub struct PaletteInput {
-    pub input: String,
-    pub kind: PaletteKind,
-}
-
-impl PaletteInput {
-    /// Update the current input in the palette, and the kind of palette it is
-    pub fn update_input(&mut self, input: String, kind: PaletteKind) {
-        self.kind = kind.get_palette_kind(&input);
-        self.input = self.kind.get_input(&input).to_string();
-    }
-}
-
 #[derive(Clone)]
 pub struct PaletteData {
     run_id_counter: Arc<AtomicU64>,
@@ -90,9 +77,8 @@ pub struct PaletteData {
     pub preselect_index: RwSignal<Option<usize>>,
     pub items: RwSignal<imbl::Vector<PaletteItem>>,
     pub filtered_items: ReadSignal<imbl::Vector<PaletteItem>>,
-    pub input: RwSignal<PaletteInput>,
-    kind: RwSignal<PaletteKind>,
-    pub input_editor: EditorData,
+    pub input: RwSignal<String>,
+    pub kind: RwSignal<PaletteKind>,
     pub preview_editor: EditorData,
     pub has_preview: RwSignal<bool>,
     pub keypress: ReadSignal<KeyPressData>,
@@ -123,76 +109,109 @@ impl PaletteData {
         source_control: SourceControlData,
         common: Rc<CommonData>,
     ) -> Self {
-        let status = cx.create_rw_signal(PaletteStatus::Inactive);
-        let items = cx.create_rw_signal(imbl::Vector::new());
-        let preselect_index = cx.create_rw_signal(None);
-        let index = cx.create_rw_signal(0);
-        let references = cx.create_rw_signal(Vec::new());
-        let input = cx.create_rw_signal(PaletteInput {
-            input: "".to_string(),
-            kind: PaletteKind::File,
-        });
-        let kind = cx.create_rw_signal(PaletteKind::File);
-        let input_editor = main_split.editors.make_local(cx, common.clone());
         let preview_editor = main_split.editors.make_local(cx, common.clone());
-        let has_preview = cx.create_rw_signal(false);
-        let run_id = cx.create_rw_signal(0);
-        let run_id_counter = Arc::new(AtomicU64::new(0));
+
+        let (palette, set_filtered_items) = cx.enter(move || {
+            let (filtered_items, set_filtered_items) =
+                RwSignal::new_split(Default::default());
+            (
+                Self {
+                    run_id_counter: Arc::new(AtomicU64::new(0)),
+                    main_split,
+                    run_id: Default::default(),
+                    workspace,
+                    status: RwSignal::new(PaletteStatus::Inactive),
+                    index: Default::default(),
+                    preselect_index: Default::default(),
+                    items: Default::default(),
+                    filtered_items,
+                    preview_editor,
+                    has_preview: Default::default(),
+                    input: Default::default(),
+                    kind: RwSignal::new(PaletteKind::File),
+                    keypress,
+                    clicked_index: Default::default(),
+                    executed_commands: Default::default(),
+                    executed_run_configs: Default::default(),
+                    references: Default::default(),
+                    source_control,
+                    common,
+                    left_diff_path: Default::default(),
+                    file_chooser_directory: Default::default(),
+                },
+                set_filtered_items,
+            )
+        });
 
         let (run_tx, run_rx) = channel();
-        {
-            let run_id = run_id.read_only();
-            let input = input.read_only();
-            let items = items.read_only();
-            let tx = run_tx;
-            {
-                let tx = tx.clone();
-                // this effect only monitors items change
-                cx.create_effect(move |_| {
-                    let items = items.get();
-                    let input = input.get_untracked();
-                    let run_id = run_id.get_untracked();
-                    let preselect_index =
-                        preselect_index.try_update(|i| i.take()).unwrap();
-                    if let Err(err) =
-                        tx.send((run_id, input.input, items, preselect_index))
-                    {
-                        tracing::error!("{:?}", err);
-                    }
-                });
+
+        // this effect only monitors items change
+        cx.create_effect({
+            let run_id = palette.run_id.read_only();
+            let input = palette.input.read_only();
+            let items = palette.items.read_only();
+            let preselect_index = palette.preselect_index;
+            let run_tx = run_tx.clone();
+
+            move |_| {
+                let preselect_index =
+                    preselect_index.try_update(|i| i.take()).unwrap();
+
+                if let Err(err) = run_tx.send((
+                    run_id.get_untracked(),
+                    input.get_untracked(),
+                    items.get(),
+                    preselect_index,
+                )) {
+                    tracing::error!("{:?}", err);
+                }
             }
-            // this effect only monitors input change
-            cx.create_effect(move |last_kind| {
+        });
+
+        // this effect only monitors input change
+        cx.create_effect({
+            let kind = palette.kind.read_only();
+            let input = palette.input.read_only();
+            let items = palette.items.read_only();
+            let run_id = palette.run_id.read_only();
+
+            move |last_kind| {
+                let kind = kind.get();
                 let input = input.get();
-                let kind = input.kind;
                 if last_kind != Some(kind) {
                     return kind;
                 }
-                let items = items.get_untracked();
-                let run_id = run_id.get_untracked();
-                if let Err(err) = tx.send((run_id, input.input, items, None)) {
+                if let Err(err) = run_tx.send((
+                    run_id.get_untracked(),
+                    input,
+                    items.get_untracked(),
+                    None,
+                )) {
                     tracing::error!("{:?}", err);
                 }
                 kind
-            });
-        }
+            }
+        });
+
         let (resp_tx, resp_rx) = channel();
-        {
-            let run_id = run_id_counter.clone();
-            std::thread::Builder::new()
-                .name("PaletteUpdateProcess".to_owned())
-                .spawn(move || {
+        std::thread::Builder::new()
+            .name("PaletteUpdateProcess".to_owned())
+            .spawn({
+                let run_id = palette.run_id_counter.clone();
+
+                move || {
                     Self::update_process(run_id, run_rx, resp_tx);
-                })
-                .unwrap();
-        }
-        let (filtered_items, set_filtered_items) =
-            cx.create_signal(imbl::Vector::new());
-        {
+                }
+            })
+            .unwrap();
+
+        cx.create_effect({
             let resp = ChannelSignal::new(resp_rx);
-            let run_id = run_id.read_only();
-            let input = input.read_only();
-            cx.create_effect(move |_| {
+            let run_id = palette.run_id.read_only();
+            let input = palette.input.read_only();
+            let index = palette.index.write_only();
+
+            move |_| {
                 if let Some((
                     filter_run_id,
                     filter_input,
@@ -201,69 +220,42 @@ impl PaletteData {
                 )) = resp.get()
                 {
                     if run_id.get_untracked() == filter_run_id
-                        && input.get_untracked().input == filter_input
+                        && input.get_untracked() == filter_input
                     {
                         set_filtered_items.set(new_items);
-                        let i = preselect_index.unwrap_or(0);
-                        index.set(i);
+                        index.set(preselect_index.unwrap_or_default());
                     }
                 }
-            });
-        }
+            }
+        });
 
-        let clicked_index = cx.create_rw_signal(Option::<usize>::None);
-        let left_diff_path = cx.create_rw_signal(None);
-        let cached_path = cx.create_rw_signal(None);
-
-        let palette = Self {
-            run_id_counter,
-            main_split,
-            run_id,
-            workspace,
-            status,
-            index,
-            preselect_index,
-            items,
-            filtered_items,
-            input_editor,
-            preview_editor,
-            has_preview,
-            input,
-            kind,
-            keypress,
-            clicked_index,
-            executed_commands: Rc::new(RefCell::new(HashMap::new())),
-            executed_run_configs: Rc::new(RefCell::new(HashMap::new())),
-            references,
-            source_control,
-            common,
-            left_diff_path,
-            file_chooser_directory: cached_path,
-        };
-
-        {
+        // TODO: This is quite strange effect... Should be either updater effect or
+        // palette.select() run as an effect for setting index.
+        // otherwise, palette.select() does a lot of .get_untracked()...
+        cx.create_effect({
             let palette = palette.clone();
-            let clicked_index = clicked_index.read_only();
-            let index = index.write_only();
-            cx.create_effect(move |_| {
+            let clicked_index = palette.clicked_index.read_only();
+            let index = palette.index.write_only();
+
+            move |_| {
                 if let Some(clicked_index) = clicked_index.get() {
                     index.set(clicked_index);
                     palette.select();
                 }
-            });
-        }
+            }
+        });
 
-        {
+        // Monitors when the palette's input changes, so that it can update the stored input
+        // and kind of palette.
+        cx.create_effect({
             let palette = palette.clone();
-            let doc = palette.input_editor.doc();
             let input = palette.input;
+            let kind = palette.kind;
             let status = palette.status.read_only();
-            let preset_kind = palette.kind.read_only();
-            // Monitors when the palette's input changes, so that it can update the stored input
-            // and kind of palette.
-            cx.create_effect(move |last_input| {
+
+            move |last_input| {
                 // TODO(minor, perf): this could have perf issues if the user accidentally pasted a huge amount of text into the palette.
-                let new_input = doc.buffer.with(|buffer| buffer.to_string());
+                let new_input = input.get();
 
                 let status = status.get_untracked();
                 if status == PaletteStatus::Inactive {
@@ -277,54 +269,37 @@ impl PaletteData {
 
                 // If the input is not equivalent to the current input, or not initialized, then we
                 // need to update the information about the palette.
-                let changed = last_input.as_deref() != Some(new_input.as_str());
-
-                if changed {
-                    let new_kind = input
-                        .try_update(|input| {
-                            let kind = input.kind;
-                            input.update_input(
-                                new_input.clone(),
-                                preset_kind.get_untracked(),
-                            );
-                            if last_input.is_none() || kind != input.kind {
-                                Some(input.kind)
-                            } else {
-                                None
-                            }
+                if last_input.as_ref() != Some(&new_input) {
+                    // TODO: Do we really need try_update/unwrap or update is fine which skips None?
+                    let (kind, new_kind) = kind
+                        .try_update(|kind| {
+                            (*kind, kind.get_palette_kind(&new_input))
                         })
                         .unwrap();
-                    if let Some(new_kind) = new_kind {
+
+                    if last_input.is_none() || kind != new_kind {
                         palette.run_inner(new_kind);
-                    } else if input
-                        .with_untracked(|i| i.kind == PaletteKind::WorkspaceSymbol)
-                    {
+                    } else if new_kind == PaletteKind::WorkspaceSymbol {
+                        // TODO: Why is this special?
                         palette.run_inner(PaletteKind::WorkspaceSymbol);
                     }
                 }
                 Some(new_input)
-            });
-        }
+            }
+        });
 
-        {
-            let palette = palette.clone();
-            cx.create_effect(move |_| {
-                let _ = palette.index.get();
-                palette.preview();
-            });
-        }
-
-        {
-            let palette = palette.clone();
-            cx.create_effect(move |_| {
-                let focus = palette.common.focus.get();
-                if focus != Focus::Palette
-                    && palette.status.get_untracked() != PaletteStatus::Inactive
+        cx.enter(|| {
+            UpdaterEffect::new(
                 {
-                    palette.cancel();
-                }
-            });
-        }
+                    let index = palette.index.read_only();
+                    move || index.track()
+                },
+                {
+                    let palette = palette.clone();
+                    move |_| palette.preview()
+                },
+            );
+        });
 
         palette
     }
@@ -333,14 +308,16 @@ impl PaletteData {
     pub fn run(&self, kind: PaletteKind) {
         self.common.focus.set(Focus::Palette);
         self.status.set(PaletteStatus::Started);
-        let symbol = kind.symbol();
-        self.kind.set(kind);
+
         // Refresh the palette input with only the symbol prefix, losing old content.
-        self.input_editor.doc().reload(Rope::from(symbol), true);
-        self.input_editor.cursor().update(|cursor| {
-            cursor
-                .set_insert(Selection::caret(symbol.len(), CursorAffinity::Backward))
-        });
+        // NOTE: Setting kind shouldn't be needed, it is reactive via effect...
+        // self.kind.set(kind);
+        self.input.set(kind.symbol().to_owned());
+        // TODO: lapce's text input supported setting cursor position.
+        // self.input_editor.cursor().update(|cursor| {
+        //     cursor
+        //         .set_insert(Selection::caret(symbol.len(), CursorAffinity::Backward))
+        // });
     }
 
     /// Get the placeholder text to use in the palette input field.
@@ -832,7 +809,7 @@ impl PaletteData {
     }
 
     fn get_workspace_symbols(&self) {
-        let input = self.input.get_untracked().input;
+        let input = self.input.get_untracked();
 
         let set_items = self.items.write_only();
         let send = create_ext_action(self.common.scope, move |result| {
@@ -1451,7 +1428,7 @@ impl PaletteData {
                     }),
             }
         } else if self.kind.get_untracked() == PaletteKind::SshHost {
-            let input = self.input.with_untracked(|input| input.input.clone());
+            let input = self.input.with_untracked(|input| input.clone());
             let ssh = SshHost::from_string(&input);
             self.common.window_common.window_command.send(
                 WindowCommand::SetWorkspace {
@@ -1610,10 +1587,10 @@ impl PaletteData {
         }
         self.has_preview.set(false);
         self.items.update(|items| items.clear());
-        self.input_editor.doc().reload(Rope::from(""), true);
-        self.input_editor.cursor().update(|cursor| {
-            cursor.set_insert(Selection::caret(0, CursorAffinity::Backward))
-        });
+        self.input.update(|input| input.clear());
+        // self.input_editor.cursor().update(|cursor| {
+        //     cursor.set_insert(Selection::caret(0, CursorAffinity::Backward))
+        // });
     }
 
     /// Move to the next entry in the palette list, wrapping around if needed.
@@ -1798,8 +1775,8 @@ impl KeyPressFocus for PaletteData {
     fn run_command(
         &self,
         command: &crate::command::LapceCommand,
-        count: Option<usize>,
-        mods: Modifiers,
+        _count: Option<usize>,
+        _mods: Modifiers,
     ) -> CommandExecuted {
         match &command.kind {
             CommandKind::Workbench(_) => {}
@@ -1810,14 +1787,17 @@ impl KeyPressFocus for PaletteData {
             CommandKind::Edit(_)
             | CommandKind::Move(_)
             | CommandKind::MultiSelection(_) => {
-                self.input_editor.run_command(command, count, mods);
+                // TODO: Need to set up proper event filter to hook into event propagation
+                // before they get to the text_input.
+                // self.input_editor.run_command(command, count, mods);
             }
             CommandKind::MotionMode(_) => {}
         }
         CommandExecuted::Yes
     }
 
-    fn receive_char(&self, c: &str) {
-        self.input_editor.receive_char(c);
+    fn receive_char(&self, _c: &str) {
+        // TODO:
+        // self.input_editor.receive_char(c);
     }
 }
